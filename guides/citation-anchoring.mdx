@@ -1,0 +1,111 @@
+---
+title: "Citation anchoring"
+description: "Every line of generated code references the exact paper section and equation it implements."
+---
+
+When you read generated code, you should be able to open the paper and verify every non-trivial decision. Citation anchoring makes that possible. It's not a documentation convention — it's a correctness mechanism.
+
+## The problem it solves
+
+Naive code generation fills in gaps silently. You get code that runs but you can't tell which parts came from the paper and which were invented. Citation anchoring eliminates that ambiguity: every implementation choice either points to the paper or is explicitly flagged as unspecified.
+
+## How it works
+
+Every non-trivial code decision carries a comment anchored to the paper. The `§` symbol marks section references. Equation references follow a comma.
+
+```python
+# §3.2 — "We apply layer normalization before each sub-layer" (Pre-LN variant)
+class TransformerBlock(nn.Module):
+    def forward(self, x):
+        # §3.2, Eq. 2 — attention_weights = softmax(QK^T / sqrt(d_k))
+        attn_out = self.attention(self.norm1(x))  # (batch, seq_len, d_model)
+        x = x + attn_out  # §3.2 — residual connection
+```
+
+When the paper doesn't specify a detail, you get an explicit flag instead of a silent choice:
+
+```python
+# [UNSPECIFIED] Paper does not state epsilon for LayerNorm — using 1e-6 (common default)
+# Alternatives: 1e-5 (PyTorch default), 1e-8 (some implementations)
+self.norm = nn.LayerNorm(d_model, eps=1e-6)
+```
+
+## The six annotation tags
+
+| Tag | Meaning |
+|-----|---------|
+| `§X.Y` | Directly specified in paper section X.Y |
+| `§X.Y, Eq. N` | Implements equation N from section X.Y |
+| `[UNSPECIFIED]` | Paper does not state this — choice made with alternatives listed |
+| `[PARTIALLY_SPECIFIED]` | Paper mentions this but is ambiguous — quote included |
+| `[ASSUMPTION]` | Reasonable inference from paper context — reasoning explained |
+| `[FROM_OFFICIAL_CODE]` | Taken from the authors' official implementation |
+
+### `§X.Y` — section reference
+
+Used when the paper directly states what to do. The comment quotes or paraphrases the paper.
+
+```python
+# §3.1 — "The model dimension d_model = 512"
+d_model: int = 512
+```
+
+### `§X.Y, Eq. N` — equation reference
+
+Used when the code implements a specific numbered equation. This is the strongest form of citation — equations are more precise than prose.
+
+```python
+# §3.2, Eq. 4 — loss = -log(exp(sim(z_i, z_j)/τ) / Σ_k exp(sim(z_i, z_k)/τ))
+loss = -torch.log(
+    torch.exp(sim_pos / self.temperature) /
+    torch.exp(sim_all / self.temperature).sum(dim=-1)
+)
+```
+
+### `[UNSPECIFIED]` — explicit gap
+
+Used when the paper says nothing about a detail you must still decide. The comment has three required parts: what isn't specified, the choice made, and common alternatives.
+
+```python
+# [UNSPECIFIED] Paper does not state activation function in the feed-forward network
+# Using: GELU (most common in recent transformer implementations)
+# Alternatives: ReLU (original transformer), SiLU/Swish (used in LLaMA, PaLM)
+self.activation = nn.GELU()
+```
+
+### `[PARTIALLY_SPECIFIED]` — ambiguous mention
+
+Used when the paper mentions something but doesn't give enough information to implement it unambiguously. The comment includes the relevant quote.
+
+```python
+# [PARTIALLY_SPECIFIED] "We use dropout for regularization" (§3.3)
+# Rate of 0.1 stated in §4.1, but placement not specified — applying after attention and FFN
+self.dropout = nn.Dropout(p=0.1)
+```
+
+### `[ASSUMPTION]` — reasoned inference
+
+Used when you make an inference from context — such as resolving a contradiction between prose and a figure. The reasoning must be explicit.
+
+```python
+# [ASSUMPTION] Using pre-norm based on "we found pre-norm more stable" (§4.1)
+# Figure 1 shows post-norm, creating ambiguity. We follow the text over the figure.
+```
+
+### `[FROM_OFFICIAL_CODE]` — resolved via official repo
+
+Used when official code exists and resolves an otherwise unspecified detail. This is still not the same as `SPECIFIED` — the paper didn't say it, the code did.
+
+```python
+# [FROM_OFFICIAL_CODE] Using learned positional embeddings
+# github.com/author/repo/blob/main/model.py#L42
+self.pos_embedding = nn.Embedding(max_seq_len, d_model)
+```
+
+## Why this matters
+
+<Note>
+Citation anchoring means you can audit the implementation. Open the paper at the cited section and verify the code matches. If it doesn't, you've found a bug. Without citation anchoring, you have no way to know what to check.
+</Note>
+
+The `REPRODUCTION_NOTES.md` in every generated project aggregates all ambiguity flags into one place — so you can see at a glance how many choices were unspecified and what alternatives exist before you start training.

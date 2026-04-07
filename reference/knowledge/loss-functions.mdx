@@ -1,0 +1,264 @@
+---
+title: 'Loss functions'
+description: 'Canonical implementations of loss functions with attention to numerical stability, framework differences, and common implementation mistakes.'
+keywords: ['loss function', 'cross-entropy', 'contrastive', 'DDPM', 'ELBO', 'VAE', 'paper2code']
+---
+
+Canonical implementations of loss functions commonly referenced in papers, with attention to numerical stability, framework-specific differences, and common implementation mistakes.
+
+---
+
+## Cross-entropy loss
+
+### Standard cross-entropy (classification)
+
+```python
+# PyTorch built-in:
+loss_fn = nn.CrossEntropyLoss()
+# Expects: predictions (batch, num_classes) as LOGITS (not probabilities)
+#          targets (batch,) as class indices (not one-hot)
+```
+
+<Warning>
+**Common mistake:** passing probabilities (after softmax) instead of logits. PyTorch's `CrossEntropyLoss` applies log-softmax internally for numerical stability. Passing softmax output results in a double softmax.
+</Warning>
+
+### Cross-entropy with label smoothing
+
+Papers describe label smoothing differently from what PyTorch does.
+
+**Paper formula (Szegedy et al., 2016)** — for C classes and smoothing ε:
+- Correct class target: `1 - ε`
+- Each incorrect class target: `ε / (C - 1)`
+
+**PyTorch ≥ 1.10 built-in:**
+```python
+loss_fn = nn.CrossEntropyLoss(label_smoothing=0.1)
+```
+
+PyTorch distributes ε uniformly: correct class gets `1 - ε + ε/C`, others get `ε/C`. This is slightly different from the paper formula (which distributes only to incorrect classes).
+
+**Custom implementation matching the paper exactly:**
+```python
+def label_smoothed_cross_entropy(logits: torch.Tensor, targets: torch.Tensor,
+                                  n_classes: int, smoothing: float = 0.1) -> torch.Tensor:
+    """Label smoothing exactly as in Szegedy et al., 2016.
+
+    Args:
+        logits:    (batch, n_classes) — raw logits, NOT probabilities
+        targets:   (batch,) — class indices
+        n_classes: number of classes
+        smoothing: label smoothing factor ε
+    """
+    log_probs = F.log_softmax(logits, dim=-1)  # (batch, n_classes)
+
+    # NLL loss for the true class
+    nll_loss = -log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+
+    # Smooth loss: uniform over all classes
+    smooth_loss = -log_probs.mean(dim=-1)
+
+    return ((1.0 - smoothing) * nll_loss + smoothing * smooth_loss).mean()
+```
+
+For large vocabularies (NLP) the difference between PyTorch's built-in and the paper formula is negligible. For small class counts (e.g., 10), it can be noticeable.
+
+---
+
+## Contrastive losses
+
+### NT-Xent / InfoNCE (SimCLR, Oord et al.)
+
+```python
+def nt_xent_loss(z_i: torch.Tensor, z_j: torch.Tensor,
+                 temperature: float = 0.5) -> torch.Tensor:
+    """Normalized Temperature-scaled Cross Entropy loss (SimCLR, Chen et al., 2020).
+
+    Args:
+        z_i:         (batch, d) — representations of view 1
+        z_j:         (batch, d) — representations of view 2 (positive pairs)
+        temperature: τ — scaling factor
+    """
+    batch_size = z_i.size(0)
+
+    # Normalize representations
+    z_i = F.normalize(z_i, dim=-1)
+    z_j = F.normalize(z_j, dim=-1)
+
+    # Concatenate: [z_i; z_j] → (2*batch, d)
+    z = torch.cat([z_i, z_j], dim=0)
+
+    # Similarity matrix
+    sim = torch.matmul(z, z.T) / temperature  # (2*batch, 2*batch)
+
+    # Mask out self-similarity (diagonal)
+    mask = ~torch.eye(2 * batch_size, dtype=torch.bool, device=z.device)
+    sim = sim.masked_fill(~mask, float('-inf'))
+
+    # Positive pairs: (i, i+batch) and (i+batch, i)
+    labels = torch.cat([
+        torch.arange(batch_size, 2 * batch_size),
+        torch.arange(0, batch_size)
+    ], dim=0).to(z.device)
+
+    return F.cross_entropy(sim, labels)
+```
+
+<Warning>
+**Temperature matters enormously.** SimCLR uses τ=0.5. CLIP uses τ as a learned parameter initialized to 0.07. Always check what temperature the paper uses — it is often stated in the appendix, not the main text.
+
+**Do not skip normalization.** Without `F.normalize`, cosine similarity becomes an unbounded dot product and training destabilizes.
+</Warning>
+
+### Triplet loss
+
+```python
+def triplet_loss(anchor: torch.Tensor, positive: torch.Tensor,
+                 negative: torch.Tensor, margin: float = 1.0) -> torch.Tensor:
+    """Standard triplet margin loss."""
+    pos_dist = F.pairwise_distance(anchor, positive)  # (batch,)
+    neg_dist = F.pairwise_distance(anchor, negative)  # (batch,)
+    return F.relu(pos_dist - neg_dist + margin).mean()
+```
+
+---
+
+## Diffusion losses
+
+### DDPM simplified loss (Ho et al., 2020)
+
+L_simple from Eq. 14 — the model predicts the added noise, not the clean signal:
+
+```python
+def ddpm_loss(model: nn.Module, x_0: torch.Tensor,
+              noise_schedule: dict) -> torch.Tensor:
+    """L_simple = E_{t, x_0, ε}[||ε - ε_θ(x_t, t)||²]"""
+    batch_size = x_0.size(0)
+
+    # Sample random timesteps
+    t = torch.randint(0, len(noise_schedule['betas']), (batch_size,), device=x_0.device)
+
+    # Sample noise and form noisy image
+    noise = torch.randn_like(x_0)
+    alpha_cumprod_t = noise_schedule['alphas_cumprod'][t].view(-1, 1, 1, 1)
+    x_t = torch.sqrt(alpha_cumprod_t) * x_0 + torch.sqrt(1 - alpha_cumprod_t) * noise
+
+    # Predict noise and compute MSE
+    predicted_noise = model(x_t, t)
+    return F.mse_loss(predicted_noise, noise)
+```
+
+**Linear noise schedule:**
+
+```python
+def linear_noise_schedule(timesteps: int, beta_start: float = 1e-4,
+                           beta_end: float = 0.02) -> dict:
+    """Linear variance schedule from DDPM (β increases from beta_start to beta_end)."""
+    betas = torch.linspace(beta_start, beta_end, timesteps)
+    alphas = 1.0 - betas
+    alphas_cumprod = torch.cumprod(alphas, dim=0)
+    return {
+        'betas': betas,
+        'alphas': alphas,
+        'alphas_cumprod': alphas_cumprod,
+        'sqrt_alphas_cumprod': torch.sqrt(alphas_cumprod),
+        'sqrt_one_minus_alphas_cumprod': torch.sqrt(1 - alphas_cumprod),
+    }
+```
+
+Common mistakes with diffusion losses:
+
+1. **Indexing shape:** `alphas_cumprod[t]` — make sure `t` has the right shape for broadcasting.
+2. **Default schedule:** DDPM uses 1000 timesteps, linear schedule from β₁=1e-4 to β_T=0.02.
+3. **Parameterization:** the simplified loss has the model predict noise ε, not x₀ (other parameterizations exist — check the paper).
+4. **Boundary conditions:** `sqrt_one_minus_alphas_cumprod` should NOT reach exactly 0.
+
+---
+
+## VAE ELBO
+
+```python
+def vae_loss(recon_x: torch.Tensor, x: torch.Tensor,
+             mu: torch.Tensor, log_var: torch.Tensor,
+             beta: float = 1.0) -> tuple:
+    """VAE loss = Reconstruction loss + β * KL divergence.
+
+    ELBO = E_q[log p(x|z)] - β * KL(q(z|x) || p(z))
+
+    Args:
+        recon_x:  (batch, ...) — reconstructed output
+        x:        (batch, ...) — original input
+        mu:       (batch, d_latent) — mean of q(z|x)
+        log_var:  (batch, d_latent) — log variance of q(z|x)
+        beta:     KL weight (β=1 gives standard VAE, β>1 gives β-VAE)
+    """
+    # Reconstruction loss
+    recon_loss = F.mse_loss(recon_x, x, reduction='sum') / x.size(0)
+    # Alternative: F.binary_cross_entropy for images in [0, 1]
+
+    # KL divergence: KL(N(μ, σ²) || N(0, 1)) = -0.5 * Σ(1 + log σ² - μ² - σ²)
+    kl_loss = -0.5 * torch.sum(1 + log_var - mu.pow(2) - log_var.exp()) / x.size(0)
+
+    return recon_loss + beta * kl_loss, recon_loss, kl_loss
+```
+
+Common mistakes:
+
+| Mistake | Detail |
+|---------|--------|
+| Wrong reconstruction loss | Binary cross-entropy for [0,1] images; MSE for others. Papers often don't specify. |
+| Wrong reduction | `sum` vs `mean` — affects the relative weight of reconstruction vs KL. Check the paper's equation for $\frac{1}{N}$ or $\sum$. |
+| Wrong β | β=1 is standard VAE. β>1 is β-VAE for disentanglement. If the paper says "VAE loss" without β, use β=1 and flag it. |
+| Wrong KL sign | The KL term should be positive. If your KL is negative, the sign is wrong. |
+
+---
+
+## Numerical stability patterns
+
+### Log-sum-exp trick
+
+```python
+# WRONG — overflows for large values:
+result = torch.log(torch.sum(torch.exp(x)))
+
+# CORRECT — uses max subtraction internally:
+result = torch.logsumexp(x, dim=-1)
+```
+
+### Manual softmax
+
+PyTorch's `F.softmax` and `F.log_softmax` are already numerically stable. If you implement softmax manually:
+
+```python
+# WRONG:
+weights = torch.exp(scores) / torch.exp(scores).sum(dim=-1, keepdim=True)
+
+# CORRECT — subtract max first:
+scores = scores - scores.max(dim=-1, keepdim=True).values
+weights = torch.exp(scores) / torch.exp(scores).sum(dim=-1, keepdim=True)
+```
+
+### Epsilon in denominators
+
+```python
+# Match the paper's convention or use a safe default:
+x_normalized = x / (x.norm(dim=-1, keepdim=True) + 1e-8)
+```
+
+### Clamping log probabilities
+
+```python
+# When computing log of probabilities that might be 0:
+log_probs = torch.log(probs.clamp(min=1e-8))
+# Better: compute in log space from the start
+log_probs = F.log_softmax(logits, dim=-1)
+```
+
+<CardGroup cols={2}>
+  <Card title="Training recipes" icon="flask" href="/reference/knowledge/training-recipes">
+    Optimizers, LR schedules, and batch size semantics.
+  </Card>
+  <Card title="Common paper-to-code mistakes" icon="triangle-alert" href="/reference/knowledge/paper-to-code-mistakes">
+    Framework pitfalls and notation mismatches.
+  </Card>
+</CardGroup>

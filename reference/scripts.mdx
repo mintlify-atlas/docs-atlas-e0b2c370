@@ -1,0 +1,290 @@
+---
+title: "Helper scripts"
+description: "Command-line scripts for fetching and parsing arxiv papers before the skill runs."
+---
+
+The two scripts in `skills/paper2code/scripts/` handle everything that happens before the skill starts generating code: downloading the paper, extracting its text, and breaking it into structured pieces that the skill can reason about. You run them directly from your terminal; the skill reads their output files.
+
+---
+
+## fetch\_paper.py
+
+Downloads an arxiv paper, extracts its full text in markdown, and writes a metadata JSON file including any official code repository links it finds.
+
+```bash
+python skills/paper2code/scripts/fetch_paper.py <arxiv_id_or_url> <output_dir>
+```
+
+**Examples**
+
+```bash
+python skills/paper2code/scripts/fetch_paper.py 2106.09685 ./output/
+python skills/paper2code/scripts/fetch_paper.py https://arxiv.org/abs/2106.09685 ./output/
+python skills/paper2code/scripts/fetch_paper.py 2106.09685v2 ./output/
+```
+
+### Arguments
+
+<ParamField path="arxiv_id_or_url" type="string" required>
+  The arxiv paper to fetch. Accepts:
+  - Bare IDs: `2106.09685`, `2106.09685v2`
+  - Full URLs: `https://arxiv.org/abs/2106.09685`, `https://arxiv.org/pdf/2106.09685.pdf`
+  - Old-style IDs: `cs/0601007`
+</ParamField>
+
+<ParamField path="output_dir" type="string" required>
+  Directory to write outputs into. Created automatically if it does not exist.
+</ParamField>
+
+### Outputs
+
+| File | Contents |
+|---|---|
+| `{output_dir}/paper_text.md` | Full paper text in markdown, with a title/author header prepended |
+| `{output_dir}/paper_metadata.json` | Title, authors, abstract, categories, and any discovered code repository links |
+| `{output_dir}/paper.pdf` | The downloaded PDF (intermediate file) |
+
+**`paper_metadata.json` format**
+
+```json
+{
+  "arxiv_id": "1706.03762",
+  "title": "Attention Is All You Need",
+  "authors": ["Ashish Vaswani", "Noam Shazeer", "..."],
+  "abstract": "The dominant sequence transduction models...",
+  "categories": ["cs.CL", "cs.LG"],
+  "official_code": [
+    {
+      "url": "https://github.com/author/repo",
+      "source": "paper_text",
+      "context": "...surrounding text around the URL..."
+    }
+  ]
+}
+```
+
+The `official_code` array is empty (`[]`) when no repository links are found.
+
+### Extraction pipeline
+
+<Steps>
+  <Step title="Normalize the arxiv ID">
+    `normalize_arxiv_id()` strips URL prefixes, removes `.pdf` suffixes, and validates the result against new-style (`YYMM.NNNNN`) and old-style (`archive/NNNNNNN`) patterns. A warning is printed if the ID looks malformed, but execution continues.
+
+    ```python
+    def normalize_arxiv_id(input_str: str) -> str:
+        ...
+        new_style = re.match(r"^\d{4}\.\d{4,5}(v\d+)?$", input_str)
+        old_style = re.match(r"^[a-z-]+/\d{7}(v\d+)?$", input_str)
+    ```
+  </Step>
+
+  <Step title="Fetch metadata from the arxiv API">
+    `fetch_metadata()` queries `http://export.arxiv.org/api/query?id_list={base_id}` and parses the Atom XML response with lightweight regex (no heavy XML parser dependency). The version suffix is stripped before querying so you always get the latest metadata.
+
+    ```python
+    def fetch_metadata(arxiv_id: str) -> dict:
+        base_id = re.sub(r"v\d+$", "", arxiv_id)
+        api_url = f"http://export.arxiv.org/api/query?id_list={base_id}"
+    ```
+
+    Returns: `arxiv_id`, `title`, `authors`, `abstract`, `categories`. On network failure, returns a stub dict with empty fields and continues.
+  </Step>
+
+  <Step title="Download the PDF">
+    `download_pdf()` streams from `https://arxiv.org/pdf/{arxiv_id}.pdf` into `{output_dir}/paper.pdf`. If the download fails, the script skips to the ar5iv HTML fallback.
+  </Step>
+
+  <Step title="Extract text with pymupdf4llm (primary)">
+    `extract_with_pymupdf4llm()` calls `pymupdf4llm.to_markdown()`, which preserves LaTeX math notation. Requires the `pymupdf4llm` package. If the package is missing or produces fewer than 500 characters, the script moves to the next extractor.
+  </Step>
+
+  <Step title="Text quality check">
+    `check_text_quality()` runs two checks on the first 1 000 characters of extracted text:
+
+    1. **Non-standard character ratio** — if more than 20% of characters are non-ASCII and not in a known math/Greek symbol set, the text is considered garbled.
+    2. **Common English words** — if fewer than 3 of `{the, and, of, in, to, we, is, for, that, with}` appear, the text is considered garbled.
+
+    If either check fails, the current extraction result is discarded and the next method is tried.
+
+    ```python
+    def check_text_quality(text: str) -> bool:
+        weird_ratio = weird_chars / max(len(sample), 1)
+        if weird_ratio > 0.2:
+            return False
+        common_words = {"the", "and", "of", "in", "to", "we", "is", "for", "that", "with"}
+        if len(words_lower & common_words) < 3:
+            return False
+        return True
+    ```
+  </Step>
+
+  <Step title="Fallback to pdfplumber">
+    `extract_with_pdfplumber()` extracts text page-by-page using pdfplumber. Each page is wrapped in an HTML comment (`<!-- Page N -->`) to preserve page boundaries. Requires the `pdfplumber` package.
+  </Step>
+
+  <Step title="Fallback to ar5iv HTML">
+    `fetch_ar5iv_html()` fetches `https://ar5iv.labs.arxiv.org/html/{base_id}` and converts the HTML to markdown: headings become `#` blocks, `<math alttext="...">` elements become `$...$` inline math, and remaining tags are stripped.
+  </Step>
+
+  <Step title="Search for official code repositories">
+    `find_official_code()` scans two sources and returns a deduplicated list of repository links:
+
+    - **Paper text** — scans for GitHub, GitLab, and Bitbucket URLs using a URL regex, plus phrase patterns like `"code available at"`, `"implementation released at"`.
+    - **arxiv abstract page** — fetches `https://arxiv.org/abs/{base_id}` and extracts `href` attributes pointing to GitHub/GitLab/Bitbucket.
+
+    Each result includes `url`, `source` (`"paper_text"` or `"arxiv_page"`), and the surrounding `context` text.
+  </Step>
+</Steps>
+
+---
+
+## extract\_structure.py
+
+Parses a `paper_text.md` file produced by `fetch_paper.py` and splits it into structured pieces: sections, algorithm boxes, numbered equations, tables, and footnotes.
+
+```bash
+python skills/paper2code/scripts/extract_structure.py <paper_text.md> <output_dir>
+```
+
+### Arguments
+
+<ParamField path="paper_text.md" type="string" required>
+  Path to the markdown file produced by `fetch_paper.py`. Must exist.
+</ParamField>
+
+<ParamField path="output_dir" type="string" required>
+  Directory to write extracted structure into. Sub-directories are created automatically.
+</ParamField>
+
+### Outputs
+
+| Path | Contents |
+|---|---|
+| `{output_dir}/sections/` | One `.md` file per detected section, named `{N:02d}_{slug}.md` |
+| `{output_dir}/algorithms/` | One `.md` file per algorithm box |
+| `{output_dir}/equations/` | One `.md` file per numbered equation |
+| `{output_dir}/tables/` | One `.md` file per detected table |
+| `{output_dir}/footnotes.md` | All extracted footnotes in a single file |
+
+If no sections are detected (the paper has no clear headings), the entire text is saved as `sections/01_full_text.md`.
+
+### Extraction functions
+
+<AccordionGroup>
+
+  <Accordion title="identify_sections() — section boundaries">
+
+    Detects section headings using three patterns, in priority order:
+
+    1. **Markdown headings** — `#`, `##`, `###`, `####`
+    2. **Numbered headings** — e.g. `1. Introduction`, `2.1 Related Work`
+    3. **ALL CAPS headings** — e.g. `INTRODUCTION` (only if longer than 5 characters, to avoid false positives)
+
+    ```python
+    def identify_sections(text: str) -> list[dict]:
+        md_heading = re.compile(r"^(#{1,4})\s+(.+)$")
+        numbered_heading = re.compile(
+            r"^(\d+(?:\.\d+)*)\s+([A-Z][A-Za-z\s:,\-]+)$"
+        )
+        allcaps_heading = re.compile(r"^([A-Z][A-Z\s]{4,})$")
+    ```
+
+    Returns a list of `{"title": str, "content": str}` dicts.
+
+  </Accordion>
+
+  <Accordion title="extract_algorithms() — algorithm boxes">
+
+    Matches blocks that begin with `Algorithm N` (with optional colon or period and a title) and extend until the next algorithm block or section heading.
+
+    ```python
+    def extract_algorithms(text: str) -> list[dict]:
+        pattern = re.compile(
+            r"(Algorithm\s+\d+[:\.]?\s*[^\n]*)\n(.*?)"
+            r"(?=Algorithm\s+\d+[:\.]|^#{1,4}\s|\Z)",
+            re.DOTALL | re.MULTILINE,
+        )
+    ```
+
+    Returns a list of `{"title": str, "content": str}` dicts.
+
+  </Accordion>
+
+  <Accordion title="extract_equations() — numbered equations">
+
+    Finds equations from three sources, then sorts all results by equation number:
+
+    1. **LaTeX environments** — `\begin{equation}`, `\begin{align}`, `\begin{gather}` (and starred variants)
+    2. **Display math with inline numbering** — `$$ formula $$ (N)`
+    3. **Numbered lines** — any line ending in `(N)` that contains math characters (`=`, `∑`, `\\`, `_`, `^`, etc.)
+
+    ```python
+    def extract_equations(text: str) -> list[dict]:
+        latex_eq = re.compile(
+            r"\\begin\{(?:equation|align|gather)\*?\}(.*?)"
+            r"\\end\{(?:equation|align|gather)\*?\}",
+            re.DOTALL,
+        )
+        display_math = re.compile(r"\$\$(.*?)\$\$\s*\((\d+)\)", re.DOTALL)
+        numbered_line = re.compile(r"^(.+?)\s+\((\d+)\)\s*$", re.MULTILINE)
+    ```
+
+    Returns a list of `{"number": int, "content": str, "raw": str}` dicts, sorted by number.
+
+  </Accordion>
+
+  <Accordion title="extract_tables() — tables">
+
+    Extracts tables from two sources:
+
+    1. **Captioned tables** — blocks starting with `Table N:` and containing pipe characters, tabs, or multiple consecutive spaces.
+    2. **Markdown tables without captions** — blocks matching the standard pipe/separator/row markdown table pattern.
+
+    ```python
+    def extract_tables(text: str) -> list[dict]:
+        table_caption = re.compile(
+            r"(Table\s+\d+[:\.]?\s*[^\n]*)\n(.*?)"
+            r"(?=Table\s+\d+[:\.]|^#{1,4}\s|\Z)",
+            re.DOTALL | re.MULTILINE,
+        )
+        md_table = re.compile(
+            r"(\|[^\n]+\|\n\|[-:\s|]+\|\n(?:\|[^\n]+\|\n)*)",
+            re.MULTILINE,
+        )
+    ```
+
+    Table content is capped at 2 000 characters. Returns a list of `{"caption": str, "content": str}` dicts.
+
+  </Accordion>
+
+  <Accordion title="extract_footnotes() — footnotes">
+
+    Matches two patterns:
+
+    1. **Inline markers** — superscript characters (¹²³⁴–⁹), bracketed numbers `[1]`, or `1.` at the start of a line followed by footnote text.
+    2. **Explicit footnote sections** — blocks under a heading matching `/footnotes?\s*:?/i`.
+
+    ```python
+    def extract_footnotes(text: str) -> list[dict]:
+        fn_pattern = re.compile(
+            r"(?:^|\n)[\s]*(?:[\u00b9\u00b2\u00b3\u2074-\u2079]"
+            r"|\[(\d+)\]|(\d+)\.)[\s]+(.+?)"
+            r"(?=\n[\s]*(?:[\u00b9\u00b2\u00b3\u2074-\u2079]|\[\d+\]|\d+\.)\s|\n\n|\Z)",
+            re.DOTALL,
+        )
+        fn_section = re.compile(
+            r"(?:footnote|note)s?\s*:?\s*\n(.*?)(?=\n#{1,4}\s|\Z)",
+            re.DOTALL | re.IGNORECASE,
+        )
+    ```
+
+    Matches shorter than 10 characters are discarded as false positives. Returns a list of `{"content": str}` dicts, all written to a single `footnotes.md`.
+
+  </Accordion>
+
+</AccordionGroup>
+
+### File naming convention
+
+Every output file is named `{N:02d}_{slug}.md` where `N` is the one-based index within its category and `slug` is the item title lowercased, with non-word characters removed and spaces replaced by underscores, truncated to 80 characters.

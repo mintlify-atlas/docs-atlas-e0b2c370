@@ -1,0 +1,75 @@
+---
+title: "Contributing"
+description: "Add worked examples, improve guardrails, or extend the knowledge base."
+---
+
+There are three ways to contribute to paper2code. Worked examples are the highest-value contribution — they build trust by showing what the skill actually produces on real papers.
+
+## Adding worked examples
+
+Worked examples demonstrate output quality on well-known papers. Anyone can verify them independently, which is what makes them valuable.
+
+<Steps>
+  <Step title="Pick a well-known paper">
+    Choose a paper people can verify — landmark architecture papers, widely-cited training methods, or papers with known reference implementations. The more people have read the paper, the more useful the example.
+  </Step>
+  <Step title="Run the skill">
+    Run paper2code on the paper you chose:
+
+    ```
+    /paper2code https://arxiv.org/abs/XXXX.XXXXX
+    ```
+
+    Use the default (`minimal`) mode unless you have a specific reason to use `full` or `educational`.
+  </Step>
+  <Step title="Save the full output">
+    Copy everything the skill generates into `skills/paper2code/worked/{paper_slug}/`. Include all generated files — `src/`, `configs/`, `notebooks/`, `REPRODUCTION_NOTES.md`, and the project `README.md`.
+  </Step>
+  <Step title="Write an honest review">
+    Create a `review.md` in the same directory. A good review covers all four of these:
+
+    - **What the skill got right** — correctly cited sections, accurately implemented equations, sound scope decisions
+    - **What it correctly flagged** — unspecified choices that really were unspecified in the paper, ambiguities it surfaced that a naive implementation would have hidden
+    - **Mistakes it made** — wrong section citations, silent assumptions that slipped through, incorrect equation implementations
+    - **Edge cases** — anything unusual about this paper (contradictory figures and text, missing appendix, vague ablation setup) and how the skill handled it
+
+    Be direct. The review is only useful if it's honest about failures.
+  </Step>
+  <Step title="Submit a pull request">
+    Open a PR with the generated output and the `review.md`. The PR description should summarize what the example demonstrates — particularly any edge cases or failure modes that are instructive.
+  </Step>
+</Steps>
+
+### Existing worked examples
+
+See how existing worked examples are structured before adding a new one:
+
+<CardGroup cols={2}>
+  <Card title="Attention Is All You Need" icon="book-open" href="/examples/attention-is-all-you-need">
+    Architecture paper (1706.03762). Demonstrates citation anchoring on a well-studied transformer.
+  </Card>
+  <Card title="DDPM" icon="book-open" href="/examples/ddpm">
+    Training method paper (2006.11239). Demonstrates how the skill handles a paper where training IS the contribution.
+  </Card>
+</CardGroup>
+
+## Improving guardrails
+
+If you find a pattern where the skill hallucinates or makes a silent assumption, add it to the appropriate guardrail file in `skills/paper2code/guardrails/`.
+
+The most important file is `hallucination_prevention.md`. It documents:
+- Which paper phrases indicate UNSPECIFIED vs. PARTIALLY_SPECIFIED details
+- Framework translation traps (batch norm momentum conventions, dropout rate vs. keep probability, LayerNorm epsilon)
+- Common prohibited phrases that hide silent assumptions
+
+When you add a guardrail, include a concrete example — a paper phrase that triggered the failure and the correct way to handle it.
+
+## Adding domain knowledge
+
+If papers in your subfield consistently reference components the skill doesn't handle well — graph neural network primitives, RL components, audio processing blocks — add a knowledge file in `skills/paper2code/knowledge/`.
+
+The existing knowledge files follow a consistent structure: they document the component, common paper notation for it, known implementation traps, and how to cite it correctly. Match that structure in new files.
+
+<Tip>
+Domain knowledge files are most useful when they document the gap between how a paper describes something and how it's actually implemented — for example, differences in normalization conventions, or components that have the same name in different frameworks but different default behavior.
+</Tip>

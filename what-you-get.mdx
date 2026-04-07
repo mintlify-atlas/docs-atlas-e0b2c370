@@ -1,0 +1,162 @@
+---
+title: "What you get"
+description: "Every file paper2code generates and what each one contains."
+---
+
+After running `/paper2code`, you get a structured directory named after the paper. Here is the full output for the "Attention Is All You Need" example:
+
+```
+attention_is_all_you_need/
+├── README.md                    # Paper summary, contribution statement, quick-start
+├── REPRODUCTION_NOTES.md        # Ambiguity audit, unspecified choices, known deviations
+├── requirements.txt             # Pinned dependencies
+├── src/
+│   ├── model.py                 # Architecture — every layer cited to paper section
+│   ├── loss.py                  # Loss functions with equation references
+│   ├── data.py                  # Dataset class skeleton with preprocessing TODOs
+│   ├── train.py                 # Training loop (if in scope)
+│   ├── evaluate.py              # Metric computation code
+│   └── utils.py                 # Shared utilities (masking, positional encoding, etc.)
+├── configs/
+│   └── base.yaml                # All hyperparams — each one cited or flagged [UNSPECIFIED]
+└── notebooks/
+    └── walkthrough.ipynb        # Pedagogical notebook linking paper sections → code → sanity checks
+```
+
+## File reference
+
+<AccordionGroup>
+  <Accordion title="README.md" icon="file-lines">
+    A project-level README generated from the paper's content. It contains:
+
+    - **Paper summary** — what the paper proposes and why
+    - **Contribution statement** — a single paragraph identifying the core contribution that this implementation covers
+    - **Quick-start** — install dependencies and run a forward pass in a few lines of code
+    - **File structure** — a map of the output directory with per-file descriptions
+    - **Citation** — a ready-to-use BibTeX entry
+
+    The README always links to `REPRODUCTION_NOTES.md` and recommends reading it before using the code for research.
+  </Accordion>
+
+  <Accordion title="REPRODUCTION_NOTES.md" icon="clipboard-list">
+    The most important file in the output. It is the result of the ambiguity audit that paper2code runs before generating any code.
+
+    It contains:
+
+    - **Unspecified choices** — a table of every implementation detail the paper did not state, what default was used, what the alternatives are, and which paper quote (if any) partially addressed it
+    - **Known deviations** — anything this implementation intentionally does differently from the paper, and why
+    - **Expected results** — the metrics from the paper's main results table, so you know what to target
+    - **Debugging tips** — common failure modes for this type of paper and how to diagnose them
+    - **Scope decisions** — what was implemented, what was intentionally excluded, and what you need to add for full reproduction
+
+    <Tip>
+      Read this file before running any experiments. It tells you exactly which parts of the implementation to treat with caution.
+    </Tip>
+  </Accordion>
+
+  <Accordion title="requirements.txt" icon="list-check">
+    A pinned dependency file with the exact package versions used. Dependencies are selected to match what the paper's era and framework require — not just the latest available versions.
+
+    If the paper specifies a framework version (e.g., "we use PyTorch 1.9"), that version is used and flagged in the file.
+  </Accordion>
+
+  <Accordion title="src/model.py" icon="code">
+    The architecture implementation. This is the most citation-dense file in the output.
+
+    Every class maps to a named component in the paper. Every non-trivial forward-pass decision carries a comment of the form `§X.Y` or `§X.Y, Eq. N`. Variable names match the paper's mathematical notation where possible.
+
+    ```python
+    # §3.2 — "We apply layer normalization before each sub-layer" (Pre-LN variant)
+    class TransformerBlock(nn.Module):
+        def forward(self, x):
+            # §3.2, Eq. 2 — attention_weights = softmax(QK^T / sqrt(d_k))
+            attn_out = self.attention(self.norm1(x))  # (batch, seq_len, d_model)
+            x = x + attn_out  # §3.2 — residual connection
+    ```
+
+    Where the paper is ambiguous, the code uses an `[ASSUMPTION]` or `[PARTIALLY_SPECIFIED]` flag and explains the reasoning inline.
+  </Accordion>
+
+  <Accordion title="src/loss.py" icon="function">
+    Loss function implementations with equation references. Each loss term is anchored to the equation number in the paper.
+
+    If the paper describes multiple loss terms (e.g., a reconstruction loss plus a KL term), each is implemented as a separate function and the final objective is assembled with clear comments referencing the combined equation.
+  </Accordion>
+
+  <Accordion title="src/data.py" icon="database">
+    A `Dataset` class skeleton that defines the data interface without downloading or preprocessing any data.
+
+    It contains:
+
+    - Clear instructions on where to obtain the dataset
+    - The expected directory structure
+    - Preprocessing steps with `# TODO` markers where the paper is underspecified
+    - The `__getitem__` and `__len__` signatures
+
+    <Note>
+      paper2code will not download datasets. The skeleton gives you everything you need to implement the pipeline yourself, with all known preprocessing steps documented.
+    </Note>
+  </Accordion>
+
+  <Accordion title="src/train.py" icon="play">
+    The training loop, included when the mode is `full` or when training is part of the paper's core contribution.
+
+    It covers the optimizer setup, learning rate schedule (if specified), gradient clipping, and the forward-backward-step sequence — each step cited to the paper where applicable. Hyperparameters are imported from `configs/base.yaml`, not hardcoded.
+
+    In `minimal` mode, this file is omitted unless training is central to what the paper contributes.
+  </Accordion>
+
+  <Accordion title="src/evaluate.py" icon="chart-bar">
+    Metric computation code that implements the evaluation protocol described in the paper. Each metric is cited to the paper section that defines it.
+
+    Where the paper's evaluation protocol is underspecified (e.g., "we report BLEU score" without stating tokenization or beam size), the choices are flagged `[UNSPECIFIED]` and the common defaults are used.
+  </Accordion>
+
+  <Accordion title="src/utils.py" icon="wrench">
+    Shared utilities used across the other source files — things like masking helpers, positional encoding functions, and weight initialization routines. Each utility is cited if it implements something the paper describes, or flagged `[UNSPECIFIED]` if it fills a gap the paper leaves open.
+  </Accordion>
+
+  <Accordion title="configs/base.yaml" icon="sliders">
+    The single source of truth for all hyperparameters. Every entry is either cited to a paper section or flagged `[UNSPECIFIED]`.
+
+    ```yaml
+    model:
+      d_model: 512        # §3.1 — "We use d_model = 512"
+      n_heads: 8          # §3.2 — "h = 8 parallel attention layers"
+      n_layers: 6         # §3.1 — "N = 6"
+      dropout: 0.1        # §5.4 — "P_drop = 0.1"
+      eps: 1.0e-6         # [UNSPECIFIED] LayerNorm epsilon — using 1e-6 (common default)
+    ```
+
+    This makes it straightforward to audit which hyperparameters are reproducible from the paper and which you may need to sweep.
+  </Accordion>
+
+  <Accordion title="notebooks/walkthrough.ipynb" icon="book-open">
+    A pedagogical notebook that links paper sections to code to runnable sanity checks.
+
+    It is designed to run on CPU with toy dimensions (small batch, short sequence). Each cell:
+
+    1. Quotes the relevant paper passage
+    2. Shows the corresponding code
+    3. Runs a shape check or value check to confirm the implementation is plausible
+
+    In `educational` mode, the notebook is expanded with theory sections that explain the ML concepts before showing the code, making it suitable for learning from the paper alongside the implementation.
+  </Accordion>
+</AccordionGroup>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Citation anchoring" icon="link" href="/guides/citation-anchoring">
+    Learn the full tag system used in comments throughout the generated code.
+  </Card>
+  <Card title="Ambiguity flags" icon="flag" href="/guides/ambiguity-flags">
+    Understand what to do when you see [UNSPECIFIED] or [ASSUMPTION] in the code.
+  </Card>
+  <Card title="Attention Is All You Need example" icon="flask" href="/examples/attention-is-all-you-need">
+    See a complete worked output with an honest review of what the skill got right and wrong.
+  </Card>
+  <Card title="Contributing examples" icon="users" href="/guides/contributing">
+    Add your own worked example to help others verify output quality.
+  </Card>
+</CardGroup>

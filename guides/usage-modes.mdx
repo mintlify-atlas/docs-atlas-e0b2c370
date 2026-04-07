@@ -1,0 +1,104 @@
+---
+title: "Usage modes"
+description: "Run paper2code in minimal, full, or educational mode — and pick your framework."
+---
+
+paper2code supports three modes that control how much code it generates. Pass `--mode` to select one. If you omit it, you get `minimal`.
+
+## Modes
+
+<Tabs>
+  <Tab title="minimal (default)">
+    The default. Generates only what you need to understand and verify the paper's core contribution — nothing more.
+
+    **What's included:**
+    - Full model architecture (`src/model.py`) with every class cited to its paper section
+    - Loss function if the paper defines a custom one (`src/loss.py`)
+    - Dataset skeleton (`src/data.py`) — class structure and preprocessing TODOs, not a complete pipeline
+    - All hyperparameters in one place (`configs/base.yaml`), each cited or flagged `[UNSPECIFIED]`
+    - Ambiguity audit (`REPRODUCTION_NOTES.md`)
+    - Walkthrough notebook (`notebooks/walkthrough.ipynb`) — runnable on CPU with toy dimensions
+
+    **What's excluded:**
+    - Full training loop (unless training IS the contribution)
+    - Data preprocessing pipeline
+    - Evaluation pipeline
+    - Distributed training, checkpointing, experiment tracking
+
+    ```
+    /paper2code https://arxiv.org/abs/1706.03762
+    ```
+  </Tab>
+  <Tab title="full">
+    Everything in `minimal`, plus a complete training loop, data pipeline, and evaluation pipeline. Same citation rigor — more code.
+
+    **What's added over minimal:**
+    - Full training loop with all paper-specified hyperparameters (`src/train.py`)
+    - Data pipeline with preprocessing (you still provide the data)
+    - Evaluation pipeline — not just metric functions, but end-to-end evaluation (`src/evaluate.py`)
+    - Minimal checkpointing for training
+    - Learning rate schedule visualization
+
+    Use `full` when you want to run training, not just inspect the architecture.
+
+    ```
+    /paper2code 2106.09685 --mode full
+    ```
+  </Tab>
+  <Tab title="educational">
+    Everything in `minimal`, plus extra material designed for learning. Good for studying a paper closely or teaching it.
+
+    **What's added over minimal:**
+    - Extra inline comments explaining ML concepts alongside the implementation
+    - Extended walkthrough notebook with theory sections that quote the paper and explain the math
+    - `PAPER_GUIDE.md` — a section-by-section walkthrough of the paper itself, linked to the corresponding code
+
+    ```
+    /paper2code https://arxiv.org/abs/2010.11929 --mode educational
+    ```
+  </Tab>
+</Tabs>
+
+## Framework options
+
+paper2code defaults to PyTorch. Pass `--framework` to switch.
+
+| Framework | Flag | Notes |
+|-----------|------|-------|
+| PyTorch | `--framework pytorch` (default) | Used when no flag is specified |
+| JAX | `--framework jax` | Generates JAX/Flax-style implementations |
+| NumPy | `--framework numpy` | For papers that don't require autograd |
+
+```
+/paper2code https://arxiv.org/abs/2006.11239 --framework jax
+```
+
+## Arxiv ID formats
+
+You can pass either a full URL or a bare arxiv ID — paper2code accepts both.
+
+<CodeGroup>
+
+```bash Full URL
+/paper2code https://arxiv.org/abs/1706.03762
+```
+
+```bash Bare ID
+/paper2code 1706.03762
+```
+
+```bash Versioned ID
+/paper2code 2106.09685v2
+```
+
+</CodeGroup>
+
+If you pass a full URL, paper2code strips the prefix and extracts the ID. Versioned IDs (e.g., `v2`) are preserved so you always implement the exact revision you intend.
+
+## Combining options
+
+You can combine `--mode` and `--framework` freely:
+
+```
+/paper2code https://arxiv.org/abs/2006.11239 --framework jax --mode full
+```

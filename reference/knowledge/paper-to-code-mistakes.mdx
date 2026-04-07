@@ -1,0 +1,325 @@
+---
+title: 'Common paper-to-code mistakes'
+description: 'A catalog of translation patterns where code runs correctly but implements something different from what the paper describes.'
+keywords: ['mistakes', 'pitfalls', 'notation', 'framework', 'translation', 'paper2code']
+---
+
+These are not bugs in the usual sense — the code runs fine but implements something different from what the paper describes. They are systematic and predictable patterns that appear across many paper-to-code translations.
+
+---
+
+## Notation mismatches
+
+<AccordionGroup>
+  <Accordion title="Batch normalization momentum">
+    PyTorch and TensorFlow define momentum differently.
+
+    Paper convention: `running_mean = (1 - α) * running_mean + α * batch_mean` where α=0.1
+
+    | Framework | Argument | Behavior |
+    |-----------|---------|---------|
+    | PyTorch `nn.BatchNorm2d(momentum=0.1)` | 0.1 | Matches the formula above with α=0.1 |
+    | TensorFlow `BatchNormalization(momentum=0.99)` | 0.99 | Uses inverted convention — set momentum=0.9 to match PyTorch momentum=0.1 |
+
+    **Translation rule:** PyTorch `momentum=x` ≈ TensorFlow `momentum=1-x`
+
+    If a paper reports momentum without specifying the framework convention → PARTIALLY\_SPECIFIED. Check which framework the official code uses.
+  </Accordion>
+
+  <Accordion title="Dropout rate vs keep probability">
+    Older papers (and TensorFlow v1) use "keep probability." Newer papers and PyTorch use "drop probability."
+
+    | Paper says | Interpretation |
+    |-----------|----------------|
+    | "dropout 0.1" | Almost certainly drop probability = 0.1 (keep 90%) |
+    | "dropout rate 0.9" | Probably keep probability = 0.9 (same thing) |
+    | "we keep 90% of neurons" | Keep probability = 0.9 |
+
+    ```python
+    # PyTorch: p = drop probability
+    nn.Dropout(p=0.1)  # drops 10%, keeps 90%
+    ```
+
+    When in doubt: most post-2018 papers use drop probability. Srivastava et al. (2014) uses keep probability notation.
+  </Accordion>
+
+  <Accordion title="Convolution padding">
+    "Same padding" means different things across frameworks:
+
+    - **Paper says "same convolution":** output size = input size.
+    - **PyTorch:** `nn.Conv2d(padding='same')` or manually compute `padding = kernel_size // 2`.
+    - **TensorFlow:** `Conv2D(padding='same')` handles it automatically.
+    - For even kernel sizes, symmetric "same" padding isn't possible — PyTorch requires explicit asymmetric padding via `nn.functional.pad`.
+  </Accordion>
+
+  <Accordion title="Tensor dimension ordering">
+    | Framework | Image format | Name |
+    |-----------|-------------|------|
+    | PyTorch | `(batch, channels, height, width)` | NCHW |
+    | TensorFlow (default) | `(batch, height, width, channels)` | NHWC |
+
+    When converting a TensorFlow paper to PyTorch, every convolution, pooling, normalization, and reshape must account for this difference.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Activation function gotchas
+
+<AccordionGroup>
+  <Accordion title="GELU approximation">
+    There are two common GELU implementations:
+
+    ```python
+    # Exact GELU (PyTorch default since 1.12):
+    nn.GELU()
+    # = x * Φ(x) where Φ is the standard normal CDF
+
+    # Tanh approximation (used in GPT-2, BERT):
+    nn.GELU(approximate='tanh')
+    # = 0.5 * x * (1 + tanh(sqrt(2/π) * (x + 0.044715 * x³)))
+    ```
+
+    These give slightly different results. BERT uses the tanh approximation. Modern papers usually use exact GELU but often don't specify.
+  </Accordion>
+
+  <Accordion title="Swish / SiLU">
+    ```python
+    # These are the same:
+    nn.SiLU()  # PyTorch name
+    # = x * sigmoid(x)
+
+    # Some papers call it Swish with a trainable β:
+    # swish(x) = x * sigmoid(β * x)
+    # When β=1, this is SiLU. PyTorch's SiLU always uses β=1.
+    ```
+
+    If the paper says "Swish" without specifying β, use β=1 (SiLU) and flag it.
+  </Accordion>
+
+  <Accordion title="Leaky ReLU negative slope">
+    Papers rarely specify the negative slope for Leaky ReLU. Common values:
+
+    | Context | Typical slope |
+    |---------|--------------|
+    | PyTorch default | 0.01 |
+    | Some GAN papers | 0.1 or 0.2 |
+
+    If the paper says "Leaky ReLU" without a slope value → UNSPECIFIED.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Weight initialization gotchas
+
+<AccordionGroup>
+  <Accordion title="Xavier/Glorot initialization">
+    ```python
+    # Xavier uniform (Glorot & Bengio, 2010):
+    nn.init.xavier_uniform_(layer.weight)   # U(-a, a) where a = sqrt(6 / (fan_in + fan_out))
+
+    # Xavier normal:
+    nn.init.xavier_normal_(layer.weight)    # N(0, 2 / (fan_in + fan_out))
+    ```
+
+    "Xavier initialization" doesn't specify uniform or normal. They're different. Papers rarely specify which.
+  </Accordion>
+
+  <Accordion title="Kaiming/He initialization">
+    ```python
+    # Kaiming uniform (He et al., 2015):
+    nn.init.kaiming_uniform_(layer.weight, mode='fan_in', nonlinearity='relu')
+
+    # Kaiming normal:
+    nn.init.kaiming_normal_(layer.weight, mode='fan_in', nonlinearity='relu')
+    ```
+
+    `mode='fan_in'` vs `mode='fan_out'` matters. PyTorch defaults to `fan_in`, but some papers require `fan_out` for decoder layers.
+  </Accordion>
+
+  <Accordion title="PyTorch default initialization">
+    If the paper doesn't mention initialization, PyTorch applies:
+
+    | Layer | Default |
+    |-------|---------|
+    | `nn.Linear` | Kaiming uniform (fan\_in) |
+    | `nn.Conv2d` | Kaiming uniform (fan\_in) |
+    | `nn.Embedding` | Normal(0, 1) |
+    | `nn.LayerNorm` | weight=1, bias=0 |
+    | `nn.BatchNorm` | weight=1, bias=0 |
+
+    These are reasonable but may not match what the paper used (and didn't specify). Always flag with `[UNSPECIFIED]`.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Dimension and reshaping gotchas
+
+### `view()` vs `reshape()`
+
+```python
+# view() requires contiguous memory — will error if not contiguous:
+x = x.view(batch, -1)
+
+# reshape() handles non-contiguous tensors by copying if necessary:
+x = x.reshape(batch, -1)
+```
+
+After `transpose()` or `permute()`, tensors are NOT contiguous. Use `.contiguous()` before `.view()` or just use `.reshape()`.
+
+### einsum notation
+
+Papers increasingly use einsum notation. Common patterns:
+
+```python
+# Matrix multiplication:
+torch.einsum('bij,bjk->bik', A, B)       # same as torch.bmm(A, B)
+
+# Attention scores:
+torch.einsum('bhqd,bhkd->bhqk', q, k)    # (batch, heads, q_len, k_len)
+
+# Bilinear:
+torch.einsum('bi,ij,bj->b', x, W, y)
+```
+
+einsum is correct but can be slow for some patterns. For standard operations use `torch.matmul` or `@` — they're optimized.
+
+---
+
+## Loss function gotchas
+
+### Cross-entropy: logits vs probabilities
+
+```python
+# WRONG — passing softmax output causes double softmax:
+probs = F.softmax(logits, dim=-1)
+loss = nn.CrossEntropyLoss()(probs, targets)
+
+# CORRECT — CrossEntropyLoss applies log-softmax internally:
+loss = nn.CrossEntropyLoss()(logits, targets)
+```
+
+### MSE reduction
+
+Papers specify loss as a sum or average differently:
+
+| Reduction | Meaning |
+|-----------|---------|
+| PyTorch `MSELoss(reduction='mean')` | Averages over ALL elements (batch × features) |
+| Some papers | Average only over features, then sum over batch |
+| Some papers | Sum everything, no averaging |
+
+Check the paper's equation: does it have $\frac{1}{N}$ (mean) or $\sum$ (sum)?
+
+### KL divergence direction
+
+$KL(P \| Q) \neq KL(Q \| P)$
+
+- **Forward KL** ($KL(P \| Q)$): mode-covering — Q covers everywhere P has mass.
+- **Reverse KL** ($KL(Q \| P)$): mode-seeking — Q is 0 wherever P is 0.
+
+PyTorch's `nn.KLDivLoss` computes `KL(target || input)` — note the argument order:
+
+```python
+# PyTorch expects LOG probabilities as input, regular probabilities as target:
+loss = nn.KLDivLoss(reduction='batchmean')(
+    F.log_softmax(predicted_logits, dim=-1),  # log probs
+    target_probs                               # regular probs
+)
+```
+
+---
+
+## Training loop gotchas
+
+### Gradient accumulation
+
+```python
+# Divide the loss by accumulation_steps — critical to avoid LR scaling issues:
+for i, batch in enumerate(dataloader):
+    loss = model(batch) / accumulation_steps  # MUST divide
+    loss.backward()
+
+    if (i + 1) % accumulation_steps == 0:
+        optimizer.step()
+        optimizer.zero_grad()
+```
+
+Forgetting to divide the loss by `accumulation_steps` effectively scales the learning rate by that factor.
+
+### LR scheduler step timing
+
+```python
+# Per-step (most warmup schedules):
+for step in range(total_steps):
+    train_step()
+    scheduler.step()  # after every training step
+
+# Per-epoch (ReduceLROnPlateau, StepLR):
+for epoch in range(epochs):
+    train_epoch()
+    scheduler.step()  # after every epoch
+```
+
+Papers often don't specify when the scheduler steps. If it's a warmup schedule, it's almost always per-step.
+
+---
+
+## Evaluation gotchas
+
+### BLEU score implementations
+
+Different BLEU implementations give different numbers — sometimes by 1–2 points, which is significant for reporting:
+
+| Implementation | Notes |
+|----------------|-------|
+| `sacrebleu` | Recommended — reproducible standard tokenization |
+| `nltk.translate.bleu_score` | Requires pre-tokenized input |
+| `torchtext.data.metrics.bleu_score` | Deprecated |
+
+Papers before 2020 may use any of these. Use `sacrebleu` and flag as `[UNSPECIFIED]`.
+
+### FID (Fréchet Inception Distance)
+
+- Must use the SAME Inception v3 model weights (the default TF weights).
+- PyTorch and TensorFlow Inception models give slightly different features.
+- Number of samples used for FID computation matters (more samples = more stable).
+- `clean-fid` package is the recommended implementation.
+
+### `model.eval()` vs `model.train()`
+
+```python
+model.eval()   # Disables dropout; uses running stats for batch norm
+model.train()  # Enables dropout; computes batch stats for batch norm
+```
+
+<Warning>
+Always call `model.eval()` before evaluation or inference. Forgetting this is a very common source of poor eval performance — dropout randomly zeroes activations and batch norm behaves differently.
+</Warning>
+
+### Determinism
+
+If the paper reports results averaged over multiple random seeds:
+
+```python
+def set_seed(seed: int):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+```
+
+Note: `cudnn.deterministic = True` can significantly slow down training.
+
+<CardGroup cols={2}>
+  <Card title="Transformer components" icon="cpu" href="/reference/knowledge/transformer-components">
+    Canonical attention, positional encoding, and FFN implementations.
+  </Card>
+  <Card title="Hallucination prevention" icon="shield" href="/reference/guardrails/hallucination-prevention">
+    How to flag every unspecified implementation detail.
+  </Card>
+</CardGroup>

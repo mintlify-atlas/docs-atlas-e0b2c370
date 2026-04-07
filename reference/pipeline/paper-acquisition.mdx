@@ -1,0 +1,189 @@
+---
+title: "Stage 1: Paper acquisition"
+description: "Fetch the arXiv paper, extract full text with math notation preserved, and produce structured section files that downstream stages consume."
+---
+
+## Purpose
+
+Stage 1 fetches the paper from arXiv, extracts its full text with mathematical notation intact, and splits it into structured files by section. Every downstream stage reads from the output of this stage — no subsequent stage touches the raw PDF again.
+
+## Input
+
+- `ARXIV_ID` — e.g., `2106.09685` or `2106.09685v2`
+
+## Output
+
+After this stage completes, the following files exist under `.paper2code_work/{ARXIV_ID}/`:
+
+| File / directory | Contents |
+|---|---|
+| `paper_text.md` | Full paper text in markdown with LaTeX math notation |
+| `paper_metadata.json` | Title, authors, abstract, arxiv categories, `official_code` links |
+| `sections/` | One file per identified section |
+| `algorithms/` | Extracted algorithm boxes |
+| `equations/` | Extracted numbered equations |
+| `tables/` | Extracted tables — especially hyperparameter tables |
+| `footnotes.md` | All footnotes collected from the paper |
+
+## The 8-step reasoning protocol
+
+<Steps>
+  <Step title="Normalize the input">
+    Before fetching anything, normalize the ID:
+
+    - Is this a full URL or a bare ID?
+    - Does it include a version suffix (`v1`, `v2`)?
+    - Is the format valid? — `YYMM.NNNNN` for modern papers, `arch-ive/NNNNNNN` for older ones
+
+    Strip to just the ID. Keep the version suffix if present.
+  </Step>
+
+  <Step title="Fetch the paper">
+    Run the fetch script:
+
+    ```bash
+    python skills/paper2code/scripts/fetch_paper.py {ARXIV_ID} .paper2code_work/{ARXIV_ID}/
+    ```
+
+    The script tries extraction methods in this order:
+
+    1. Download from `https://arxiv.org/pdf/{id}.pdf`
+    2. Extract with `pymupdf4llm` — preferred because it preserves math notation as LaTeX
+    3. Fall back to `pdfplumber` if `pymupdf4llm` fails
+    4. Fall back to HTML from `https://ar5iv.labs.arxiv.org/html/{id}` if PDF extraction produces garbled output
+
+    **Detecting garbled output:** After extraction, scan the first 500 characters. If more than 20% are non-ASCII or non-LaTeX special characters, or if the text contains no recognizable English words, the output is garbled — fall back.
+  </Step>
+
+  <Step title="Verify extraction quality">
+    Read the extracted `paper_text.md` and check:
+
+    - [ ] Can you identify the paper title?
+    - [ ] Is the abstract present and readable?
+    - [ ] Are section headings identifiable?
+    - [ ] Are equations present (even in LaTeX notation)?
+    - [ ] Is the references section present at the end?
+
+    If any of these fail, attempt the ar5iv HTML fallback. If that also fails, ask the user to paste the paper text directly.
+  </Step>
+
+  <Step title="Run structure extraction">
+    Run `scripts/extract_structure.py` on the extracted text. This script:
+
+    - Identifies section boundaries using heading patterns (`#`, numbered headings, ALL CAPS headings)
+    - Extracts algorithm boxes — text between "Algorithm N" and the next section
+    - Extracts numbered equations
+    - Extracts tables, especially those containing hyperparameters, learning rates, or dimensions
+    - Extracts footnotes
+  </Step>
+
+  <Step title="Verify all critical sections exist">
+    You must find these sections (they may be named differently):
+
+    - Abstract
+    - Introduction (or "1 Introduction" or similar)
+    - Method / Model / Approach section — the core section, may be named anything
+    - Experiments / Results
+    - Conclusion
+
+    You must also actively look for:
+
+    - **Appendix** — check for content _after_ the references. Many papers hide implementation details, hyperparameter tables, ablation studies, prompts, and proofs here
+    - **Supplementary material references** — if the paper mentions "see supplementary" or "see appendix," note exactly what is referenced
+    - **Footnotes** — often contain critical caveats about implementation choices
+  </Step>
+
+  <Step title="Handle appendices">
+    Appendices deserve special attention because they are frequently where the real implementation details live:
+
+    1. After the References section, look for any additional content (Appendix A, B, C, etc.)
+    2. If appendices exist, extract them as separate section files
+    3. Pay special attention to:
+       - Hyperparameter tables (often Appendix A or B)
+       - System prompts
+       - Architecture diagrams described in text
+       - Training details (often Appendix C or D)
+       - Ablation studies — they reveal what matters and what doesn't
+    4. If the paper references a supplementary PDF, note it — you may need to fetch it separately from the arXiv page
+  </Step>
+
+  <Step title="Extract metadata">
+    From the paper text or arXiv abstract page, extract:
+
+    - Title
+    - Authors
+    - Year
+    - arXiv categories (e.g., `cs.LG`, `cs.CV`)
+    - Abstract (first 500 words)
+
+    Save everything to `paper_metadata.json`.
+  </Step>
+
+  <Step title="Search for official code repositories">
+    The `fetch_paper.py` script automatically searches for official code in two places:
+
+    1. **Inside the paper text** — scans for GitHub, GitLab, and Bitbucket URLs, and phrases like "code available at" or "our implementation is released at"
+    2. **The arXiv abstract page** — checks the page HTML for code repository links
+
+    Results are saved to `paper_metadata.json` under the `official_code` key. Each entry has:
+
+    | Field | Description |
+    |---|---|
+    | `url` | Repository URL |
+    | `source` | Where it was found: `paper_text` or `arxiv_page` |
+    | `context` | Surrounding text confirming it's the authors' code |
+
+    After the script runs, verify each link: open the URL and confirm it is the authors' official code for _this_ paper — not an unrelated project or an empty placeholder.
+
+    <Note>
+      If official code is found, it becomes a critical resource in Stage 3. Every `[UNSPECIFIED]` item should be checked against the official code before choosing a default. Choices resolved this way get a `[FROM_OFFICIAL_CODE]` tag instead.
+    </Note>
+  </Step>
+</Steps>
+
+## Fallback protocol
+
+<AccordionGroup>
+  <Accordion title="PDF download fails (403, 404, network error)">
+    1. Try the ar5iv HTML version: `https://ar5iv.labs.arxiv.org/html/{id}`
+    2. If that also fails, try the abstract page `https://arxiv.org/abs/{id}` to confirm the paper exists
+    3. If the paper exists but cannot be fetched, ask the user to download the PDF manually and provide the local path
+  </Accordion>
+
+  <Accordion title="Extraction produces garbled text">
+    1. Try `pdfplumber` instead of `pymupdf4llm`
+    2. If still garbled, fetch the ar5iv HTML version
+    3. If the HTML is also bad, try extracting text without math preservation
+    4. Last resort: ask the user to paste the paper text directly
+  </Accordion>
+
+  <Accordion title="Paper is very long (more than 50 pages)">
+    1. Still extract everything — do not truncate
+    2. The section-level files in `sections/` allow reading parts individually without loading the full paper
+    3. Focus on the Method section and appendices for implementation details — these are what Stage 3 will need
+
+    If the Method section is garbled but other sections are fine, attempt to re-extract just that section from the HTML version. The Method section is the most critical — you cannot proceed without a readable version of it.
+  </Accordion>
+</AccordionGroup>
+
+## Quality checklist before proceeding to Stage 2
+
+Before moving to Stage 2, confirm all of the following:
+
+- [ ] `paper_text.md` exists and is readable
+- [ ] `paper_metadata.json` has title and authors
+- [ ] At least one section file exists in `sections/`
+- [ ] You have checked for appendices
+- [ ] You have checked for algorithm boxes
+- [ ] Equations are present (even in LaTeX form)
+- [ ] The Method / Model section is identified and readable
+- [ ] You have checked for official code repositories — results are in `paper_metadata.json` under `official_code`
+
+<CardGroup cols={2}>
+  <Card title="Stage 2: Contribution identification" icon="arrow-right" href="/reference/pipeline/contribution-identification">
+    Identify the core contribution and classify the paper type before writing any code
+  </Card>
+  <Card title="Stage 3: Ambiguity audit" icon="flag" href="/reference/pipeline/ambiguity-audit">
+    Audit every implementation detail before generating code
+  </Card>
+</CardGroup>

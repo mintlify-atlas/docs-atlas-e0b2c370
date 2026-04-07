@@ -1,0 +1,219 @@
+---
+title: "Stage 3: Ambiguity audit"
+description: "The most important anti-hallucination stage. Classify every implementation-relevant detail as SPECIFIED, PARTIALLY_SPECIFIED, or UNSPECIFIED before writing any code."
+---
+
+## Purpose
+
+This is the most important anti-hallucination stage in the entire pipeline. Before generating a single line of code, you systematically audit every implementation-relevant detail and classify it as `SPECIFIED`, `PARTIALLY_SPECIFIED`, or `UNSPECIFIED`. This stage produces the raw material for `REPRODUCTION_NOTES.md`.
+
+**Assume nothing. Verify everything.**
+
+When you read "we use standard settings," ask: standard according to whom? When you read "following prior work," ask: which prior work, and which specific detail from it? When something seems obvious, ask: is it obvious because it's specified, or because you're making an assumption?
+
+The goal is a document where any reader can look at any implementation choice and immediately know whether the paper specified it or whether you chose it.
+
+## Input
+
+- Parsed paper sections from Stage 1
+- Contribution analysis from Stage 2 (includes official code status)
+- Official code repository (if found in Stage 1 — URL in `paper_metadata.json` under `official_code`)
+
+## Output
+
+- `.paper2code_work/{ARXIV_ID}/ambiguity_audit.md` — complete audit with classification for every item
+
+## The complete checklist
+
+For each item below, search the paper (method section, experiments section, appendix, footnotes — all of them) and classify it as one of:
+
+- **`SPECIFIED`** — the paper states this explicitly. Record the exact quote and section.
+- **`PARTIALLY_SPECIFIED`** — the paper mentions it but is ambiguous. Record the quote and what is unclear.
+- **`UNSPECIFIED`** — the paper does not state this at all. Record common choices and which one you will use as a default.
+
+<AccordionGroup>
+  <Accordion title="Architecture details">
+    | Item | What to look for | Common hiding spots |
+    |---|---|---|
+    | Layer count / depth | "N layers", "L = 6" | Table 1, first paragraph of experiments |
+    | Hidden dimensions | "d\_model = 512", "hidden size" | Architecture figure caption, config table in appendix |
+    | Number of attention heads | "h = 8 heads" | Same as hidden dims |
+    | Head dimension | Often d\_model / h, but not always stated | Sometimes only implicit |
+    | Feed-forward inner dimension | "d\_ff = 2048", "4x expansion" | Appendix, architecture details |
+    | Activation functions | "ReLU", "GELU", "SiLU/Swish" | Often unstated — do not assume ReLU |
+    | Normalization type | LayerNorm, BatchNorm, RMSNorm | Often stated, but placement is often unstated |
+    | Normalization placement | Pre-norm vs post-norm | Critical for transformers. Check figure vs text — they often disagree |
+    | Normalization epsilon | Almost never stated | Default varies: 1e-5 (PyTorch), 1e-6 (common in papers), 1e-8 (rare) |
+    | Initialization scheme | Xavier, Kaiming, custom | Appendix or not stated at all |
+    | Dropout rate | "dropout = 0.1" | Appendix, sometimes different rates for different layers |
+    | Dropout placement | After attention? After FFN? On embeddings? | Rarely specified precisely |
+    | Residual connections | Usually obvious from figures, but connection pattern matters | Check whether pre-norm or post-norm |
+    | Bias terms | Whether linear layers have bias | Almost never stated explicitly |
+    | Weight tying | Whether embedding and output projection share weights | Sometimes mentioned casually |
+    | Vocabulary size | For NLP models | Dataset description section |
+    | Max sequence length | For sequence models | Experiments section, dataset preprocessing |
+  </Accordion>
+
+  <Accordion title="Training details">
+    | Item | What to look for | Common hiding spots |
+    |---|---|---|
+    | Optimizer | "Adam", "SGD", "AdamW" | Method or experiments section |
+    | Learning rate | The peak / base learning rate | Experiments, appendix |
+    | Adam betas | β₁, β₂ values | Appendix if anywhere — papers often say "Adam" without specifying |
+    | Adam epsilon | ε value | Almost never stated |
+    | Weight decay | Value and where applied | Appendix. Often not applied to biases and LayerNorm |
+    | LR schedule | Warmup type, decay type | Appendix or experiments |
+    | Warmup steps | How many steps / epochs | Appendix — often unstated even when warmup is mentioned |
+    | Total training steps / epochs | How long to train | Experiments section |
+    | Batch size | Total or per-GPU? | Crucial distinction — often ambiguous |
+    | Gradient accumulation | How many micro-batches? | Appendix or unstated |
+    | Gradient clipping | Max norm value | Appendix or unstated |
+    | Mixed precision | FP16, BF16, or FP32? | Appendix, systems section |
+    | Random seed | For reproducibility | Appendix or unstated |
+    | Hardware | Number of GPUs, training hardware | Often in experiments or appendix |
+    | EMA | Exponential moving average of weights? Decay rate? | Common in diffusion models, often in appendix |
+  </Accordion>
+
+  <Accordion title="Data details">
+    | Item | What to look for | Common hiding spots |
+    |---|---|---|
+    | Dataset name and version | Exact dataset identifier | Experiments section |
+    | Preprocessing steps | Tokenization, normalization, resizing | Appendix, experiments |
+    | Data augmentation | Random crop, flip, color jitter, etc. | Appendix or buried in experiments |
+    | Train / val / test split | Standard or custom? | Usually standard but verify |
+    | Sequence length / image size | Input dimensions | Experiments, may differ from model max |
+    | Tokenizer | Which one specifically (BPE, WordPiece, SentencePiece) | Dataset section, appendix |
+  </Accordion>
+
+  <Accordion title="Evaluation details">
+    | Item | What to look for | Common hiding spots |
+    |---|---|---|
+    | Metrics used | Accuracy, BLEU, FID, etc. | Experiments section |
+    | Metric computation details | Which BLEU? What tokenizer? Smoothing? | Appendix or reference to external package |
+    | Evaluation frequency | Every N steps? Every epoch? | Appendix |
+    | Test-time augmentation | Averaging over crops / flips? | Experiments or appendix |
+    | Reported numbers | What Table 1 / main results show | Results section — record these for validation |
+  </Accordion>
+</AccordionGroup>
+
+## How to search the paper
+
+For each checklist item, search in this order:
+
+1. **Method section** — the obvious place
+2. **Experiments section** — often contains an "Implementation Details" or "Training Details" subsection
+3. **Appendix** — the most common hiding spot for training details
+4. **Figure captions** — sometimes specify architectural details not present in the text
+5. **Footnotes** — authors sometimes put caveats and clarifications in footnotes
+6. **Table captions** — hyperparameter tables often have footnotes with additional context
+7. **Keyword search** — search the paper text for "learning rate", "dropout", "optimizer", etc.
+
+## How to handle "following X" references
+
+When the paper says "following [X]", "similar to [X]", or "as in [X]":
+
+1. Note the reference — what is paper X?
+2. If X is a well-known paper (e.g., "following Vaswani et al."), describe what X specifies
+3. If X is an obscure paper, flag it as requiring the reader to look up that paper
+
+Record it as:
+
+```
+[PARTIALLY_SPECIFIED] Paper says "following [X]" for {component} — X specifies {detail} but reader should verify
+```
+
+## How to resolve ambiguities using official code
+
+If official code was found in Stage 1, use it as the primary resource for resolving `UNSPECIFIED` and `PARTIALLY_SPECIFIED` items.
+
+**Process:**
+
+1. For each `UNSPECIFIED` item, search the official repo for the relevant detail (e.g., look for `eps`, `dropout`, `lr` in config files and model code)
+2. If you find the answer, update the classification:
+   - `UNSPECIFIED` → `SPECIFIED` with tag `[FROM_OFFICIAL_CODE]`
+   - `PARTIALLY_SPECIFIED` → `SPECIFIED` with tag `[FROM_OFFICIAL_CODE]`
+3. Record the exact file and line from the official repo: `github.com/author/repo/blob/main/model.py#L42`
+
+**What official code can resolve:**
+- Activation functions, normalization epsilon, dropout placement
+- Initialization schemes — often the biggest silent assumption
+- Learning rate schedule details, optimizer parameters
+- Data preprocessing steps
+- Any "standard settings" or "following prior work" references
+
+**What official code cannot resolve:**
+- Whether the code matches the paper's intent (bugs exist in official code too)
+- Whether a detail was chosen for the paper's experiments vs. for engineering convenience
+
+<Warning>
+  Official code is a reference, not ground truth. If the official code contradicts the paper, note both and flag the discrepancy rather than silently following one or the other.
+</Warning>
+
+## How to handle errata and contradictions
+
+**Figure vs text disagreement:** Flag it explicitly. Implement what the text and equations say — they are usually more carefully reviewed than figures — but note that the figure shows something different.
+
+**Abstract vs method section disagreement:** The method section wins. The abstract is a summary and may oversimplify.
+
+**Equation vs prose disagreement:** The equation wins. It is more precise. Flag the discrepancy.
+
+**Paper vs official code disagreement:** Note both. The official code may fix bugs or reflect later understanding, but the paper is what was peer-reviewed. Record it as:
+
+```
+Paper says X in §Y.Z, but official code does W — we implement {choice} because {reason}
+```
+
+## Output format
+
+Save to `.paper2code_work/{ARXIV_ID}/ambiguity_audit.md`:
+
+```markdown
+# Ambiguity Audit: {paper_title}
+
+## Architecture
+
+| Component | Status | Paper Quote | Section | Our Choice | Alternatives |
+|-----------|--------|-------------|---------|------------|--------------|
+| Hidden dim | SPECIFIED | "d_model = 512" | §3.1 | 512 | — |
+| Activation | UNSPECIFIED | — | — | GELU | ReLU, SiLU |
+| Pre/post norm | PARTIALLY_SPECIFIED | "we use layer norm" | §3.2 | Pre-norm | Post-norm (figure suggests post-norm) |
+
+## Training
+{same table format}
+
+## Data
+{same table format}
+
+## Evaluation
+{same table format}
+
+## Contradictions found
+- {description of any inconsistencies}
+
+## References to check
+- {any "following X" references that need verification}
+
+## Official code
+- URL: {if found}
+- Used to resolve: {list of items resolved by reading official code}
+```
+
+## Self-check before proceeding
+
+- [ ] Every item in the checklist has been classified — not just the obvious ones
+- [ ] Every `SPECIFIED` item has an exact quote and section reference
+- [ ] Every `UNSPECIFIED` item has a default choice and alternatives listed
+- [ ] You checked the appendix, not just the method section
+- [ ] You checked footnotes
+- [ ] You looked for an official code repository
+- [ ] Any "following [X]" references are flagged
+- [ ] Contradictions between text, figures, and equations are noted
+
+<CardGroup cols={2}>
+  <Card title="Stage 2: Contribution identification" icon="arrow-left" href="/reference/pipeline/contribution-identification">
+    Define what to implement before auditing
+  </Card>
+  <Card title="Stage 4: Code generation" icon="arrow-right" href="/reference/pipeline/code-generation">
+    Generate citation-anchored code from the audit
+  </Card>
+</CardGroup>

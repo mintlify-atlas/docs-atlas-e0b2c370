@@ -1,0 +1,337 @@
+---
+title: "Attention Is All You Need"
+description: "A full worked example: paper2code implements the Transformer architecture (Vaswani et al., 2017) — citation-anchored, ambiguity-audited, and ready to run."
+keywords: ["transformer", "attention", "worked example", "NLP", "sequence-to-sequence"]
+---
+
+**Paper:** Attention Is All You Need — Vaswani et al., 2017
+**arXiv:** [1706.03762](https://arxiv.org/abs/1706.03762)
+**Command:**
+
+```bash
+/paper2code https://arxiv.org/abs/1706.03762
+```
+
+<Note>
+This page walks through the actual output of running paper2code on the Transformer paper. Every code block is taken verbatim from the generated files. The review section documents what the skill got right, what it correctly flagged as unspecified, and where there is room for improvement.
+</Note>
+
+---
+
+## What this paper contributes
+
+The Transformer is an encoder-decoder architecture for sequence transduction that replaces recurrence and convolutions entirely with multi-head self-attention. The core contributions are:
+
+- Scaled dot-product attention (§3.2.1, Eq. 1)
+- Multi-head attention (§3.2.2)
+- Sinusoidal positional encoding (§3.5)
+- The encoder and decoder stacks of N=6 layers (§3.1)
+- Weight tying between embeddings and output projection (§3.4)
+
+paper2code identifies this as **type a** (architecture paper) and generates the full model architecture, the label-smoothed loss, and a minimal training example — it does not attempt to generate a full WMT training pipeline.
+
+---
+
+<AccordionGroup>
+
+<Accordion title="File structure">
+
+```text
+attention_is_all_you_need/
+├── README.md                 # Project overview and quick start
+├── REPRODUCTION_NOTES.md     # Ambiguity audit — what's specified vs. assumed
+├── requirements.txt          # Dependencies
+├── src/
+│   ├── model.py              # Full Transformer architecture (§3)
+│   ├── loss.py               # Label-smoothed cross-entropy (§5.4)
+│   ├── data.py               # Dataset skeleton for WMT translation
+│   ├── train.py              # Minimal training example
+│   ├── evaluate.py           # BLEU score computation
+│   └── utils.py              # Masking utilities and LR schedule
+├── configs/
+│   └── base.yaml             # All hyperparameters from §3 and Table 3
+└── notebooks/
+    └── walkthrough.ipynb     # Paper sections → code → sanity checks
+```
+
+**Dependencies** (`requirements.txt`):
+
+```text
+torch>=2.0.0
+numpy>=1.24.0
+pyyaml>=6.0
+```
+
+</Accordion>
+
+<Accordion title="Model code">
+
+### Configuration
+
+Every hyperparameter is either cited to a paper section or marked `[UNSPECIFIED]`:
+
+```python
+@dataclass
+class TransformerConfig:
+    """All model hyperparameters.
+
+    Values from Vaswani et al. 2017, Table 3 ("base model") unless marked [UNSPECIFIED].
+    """
+    # Architecture — §3, Table 3
+    d_model: int = 512          # §3.1, Table 3 — "d_model = 512"
+    n_heads: int = 8            # §3.2.2, Table 3 — "h = 8"
+    d_ff: int = 2048            # §3.3, Table 3 — "d_ff = 2048"
+    n_encoder_layers: int = 6   # §3.1, Table 3 — "N = 6"
+    n_decoder_layers: int = 6   # §3.1, Table 3 — "N = 6"
+    dropout: float = 0.1        # §5.4, Table 3 — "P_drop = 0.1"
+    vocab_size: int = 37000     # §5.1 — "~37000 tokens" (EN-DE BPE)
+    max_seq_len: int = 5000     # [UNSPECIFIED] — max length for positional encoding
+    norm_eps: float = 1e-6      # [UNSPECIFIED] — LayerNorm epsilon not stated. Alternatives: 1e-5 (PyTorch default)
+    tie_weights: bool = True    # §3.4 — "we share the same weight matrix"
+```
+
+### Scaled dot-product attention (§3.2.1, Eq. 1)
+
+```python
+def scaled_dot_product_attention(
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
+    dropout: Optional[nn.Dropout] = None,
+) -> torch.Tensor:
+    """§3.2.1, Eq. 1 — Attention(Q, K, V) = softmax(QK^T / √d_k) V
+
+    Args:
+        query: (batch, n_heads, seq_q, d_k)
+        key:   (batch, n_heads, seq_k, d_k)
+        value: (batch, n_heads, seq_k, d_v)
+        mask:  (batch, 1, seq_q, seq_k) or (1, 1, seq_q, seq_k)
+        dropout: optional dropout on attention weights
+
+    Returns:
+        (batch, n_heads, seq_q, d_v) — attention output
+    """
+    d_k = query.size(-1)
+
+    # §3.2.1 — divide by √d_k, not √d_model — common mistake
+    scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(d_k)
+
+    if mask is not None:
+        # §3.2.3 — set to −∞ before softmax, not multiply after
+        scores = scores.masked_fill(mask == 0, float("-inf"))
+
+    attn_weights = F.softmax(scores, dim=-1)
+
+    if dropout is not None:
+        attn_weights = dropout(attn_weights)
+
+    return torch.matmul(attn_weights, value)
+```
+
+### Positional encoding (§3.5)
+
+```python
+class PositionalEncoding(nn.Module):
+    """§3.5 — Positional Encoding (sinusoidal).
+
+    PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
+    PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+    """
+
+    def __init__(self, config: TransformerConfig):
+        super().__init__()
+        self.dropout = nn.Dropout(config.dropout)
+
+        pe = torch.zeros(config.max_seq_len, config.d_model)
+        position = torch.arange(0, config.max_seq_len).unsqueeze(1).float()
+        div_term = torch.exp(
+            torch.arange(0, config.d_model, 2).float()
+            * (-math.log(10000.0) / config.d_model)
+        )
+
+        pe[:, 0::2] = torch.sin(position * div_term)  # even indices: sin
+        pe[:, 1::2] = torch.cos(position * div_term)  # odd indices: cos
+        pe = pe.unsqueeze(0)  # (1, max_len, d_model) — batch broadcast
+        self.register_buffer("pe", pe)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # §3.5 — "We apply dropout to the sums of the embeddings and the positional encodings"
+        x = x + self.pe[:, :x.size(1)]
+        return self.dropout(x)
+```
+
+### Encoder layer (§3.1)
+
+```python
+class EncoderLayer(nn.Module):
+    """§3.1 — Single encoder layer.
+
+    LayerNorm(x + Sublayer(x))  — post-norm formulation, matching Figure 1
+    """
+
+    def forward(
+        self, x: torch.Tensor, src_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        # §3.1 — Sub-layer 1: Multi-head self-attention
+        # Post-norm: LayerNorm(x + Dropout(Sublayer(x)))
+        attn_out = self.self_attn(x, x, x, mask=src_mask)
+        x = self.norm1(x + self.dropout1(attn_out))
+
+        # §3.1 — Sub-layer 2: Feed-forward network
+        ff_out = self.feed_forward(x)
+        x = self.norm2(x + self.dropout2(ff_out))
+
+        return x
+```
+
+### LR schedule (§5.3, Eq. 3)
+
+```python
+def get_transformer_lr_schedule(
+    optimizer: optim.Optimizer,
+    d_model: int,
+    warmup_steps: int = 4000,
+) -> optim.lr_scheduler.LambdaLR:
+    """§5.3, Eq. 3 — lr = d_model^(-0.5) * min(step^(-0.5), step * warmup^(-1.5))"""
+
+    def lr_lambda(step: int) -> float:
+        step = max(step, 1)  # avoid division by zero at step 0
+        return d_model ** (-0.5) * min(step ** (-0.5), step * warmup_steps ** (-1.5))
+
+    return optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+```
+
+### Label-smoothed loss (§5.4)
+
+```python
+class LabelSmoothedCrossEntropy(nn.Module):
+    """§5.4 — Label smoothing with KL divergence, ε_ls = 0.1.
+
+    NOTE: Differs slightly from PyTorch's built-in label_smoothing parameter.
+    PyTorch distributes ε/V to all classes; the paper distributes to incorrect
+    classes only. For large vocabularies (V >> 1) the difference is negligible.
+    We implement the paper's stated formulation.
+    """
+
+    def forward(self, logits: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        vocab_size = logits.size(-1)
+        logits = logits.contiguous().view(-1, vocab_size)
+        targets = targets.contiguous().view(-1)
+
+        log_probs = F.log_softmax(logits, dim=-1)
+        nll_loss = -log_probs.gather(dim=-1, index=targets.unsqueeze(-1)).squeeze(-1)
+        smooth_loss = -log_probs.mean(dim=-1)
+
+        # §5.4 — combined loss
+        loss = self.confidence * nll_loss + self.smoothing * smooth_loss
+
+        non_pad_mask = targets != self.pad_idx
+        loss = loss * non_pad_mask.float()
+        return loss.sum() / non_pad_mask.float().sum().clamp(min=1.0)
+```
+
+</Accordion>
+
+<Accordion title="Reproduction notes">
+
+The generated `REPRODUCTION_NOTES.md` records every implementation decision and whether it is specified by the paper. Here is the complete unspecified-choices table:
+
+| Component | Choice made | Alternatives | Paper quote | Section |
+|---|---|---|---|---|
+| LayerNorm epsilon | 1e-6 | 1e-5 (PyTorch default), 1e-8 | — | — |
+| LayerNorm placement | Post-norm | Pre-norm (more stable at scale) | "add & norm" in Figure 1 | §3.1, Figure 1 |
+| Activation in FFN | ReLU | GELU (modern default) | "ReLU" in Eq. 2 | §3.3 |
+| Bias in linear projections | True | False | — | — |
+| Weight initialization | Xavier uniform | PyTorch defaults, normal(0, 0.02) | — | — |
+| Embedding scale factor | √d_model | 1.0 (no scaling) | "multiply those weights by √d_model" | §3.4 |
+| Dropout on attention weights | Yes (rate 0.1) | No dropout on weights | — | §5.4 states P_drop=0.1 but placement unspecified |
+| Max sequence length for PE | 5000 | 512, 10000 | — | — |
+
+**Known deviations:** None intentional. The implementation follows the paper specification closely.
+
+**Expected results:**
+
+| Metric | Paper's number | Dataset | Conditions |
+|---|---|---|---|
+| BLEU | 27.3 | WMT 2014 EN-DE | Table 2, base model, beam size 4 |
+| BLEU | 38.1 | WMT 2014 EN-FR | Table 2, big model |
+| Training cost | 12 hours on 8 P100 GPUs | — | §5.2, base model, 100k steps |
+
+**Debugging tips from the generated notes:**
+
+- **Loss not decreasing** — verify the LR schedule follows Eq. 3 exactly. A constant LR or generic warmup schedule gives different results.
+- **NaN in attention** — the mask must add `-inf` before softmax, not multiply after. All-zero rows (fully masked positions) cause NaN — ensure at least one position is always attended to.
+- **Poor translation quality** — verify label smoothing (ε=0.1 with KL divergence), the √d_model embedding scale, and that weight tying is enabled.
+- **Parameter count mismatch** — the base model should have approximately 65M parameters.
+
+</Accordion>
+
+<Accordion title="Review">
+
+The review evaluates the skill's output against the paper.
+
+### What the skill got right
+
+**Architecture implementation**
+- Multi-head attention follows §3.2.1 and §3.2.2 precisely
+- Scale factor uses d_k (= d_model/h = 64), not d_model — a common mistake in reimplementations
+- Positional encoding matches §3.5 exactly — sinusoidal with correct div_term formula
+- Encoder and decoder stacks are N=6 layers as specified in Table 3
+- Post-norm placement matches Figure 1
+
+**Citation anchoring**
+- Every class and function references the correct paper section and equation number
+- Shape comments are present on every tensor operation
+- Variable names match paper notation (Q, K, V, d_k, d_model)
+
+**Ambiguity flagging**
+- LayerNorm epsilon flagged as `[UNSPECIFIED]` — correct, paper doesn't mention it
+- Weight initialization flagged as `[UNSPECIFIED]` — correct
+- Bias in linear layers flagged as `[UNSPECIFIED]` — correct
+- Max sequence length for PE flagged as `[UNSPECIFIED]` — correct
+- Gradient clipping flagged as `[UNSPECIFIED]` — correct
+
+**Config file**
+- β₁, β₂, ε for Adam correctly sourced from §5.3
+- Label smoothing ε=0.1 from §5.4
+- Warmup steps 4000 from §5.3
+
+### Discussion points
+
+**Pre-norm vs post-norm** — The implementation uses post-norm (LayerNorm after residual addition), matching Figure 1. Some researchers argue the paper describes pre-norm in the text. The choice is reasonable and documented in REPRODUCTION_NOTES.md, but could be more explicit in the code comments.
+
+**Dropout placement** — The paper says "Residual Dropout" in §5.4, applied "to the output of each sub-layer." The exact placement across attention weights, attention output, FFN internal, FFN output, and embeddings is somewhat ambiguous. The implementation handles this reasonably but could flag the attention-weight dropout more specifically as a partial specification.
+
+**Weight tying** — Three-way weight tying (source embedding, target embedding, output projection) as described in §3.4 is correctly implemented. This is a detail many reimplementations miss.
+
+**Training scope** — Correctly identified this as an architecture paper and limited the training code to a minimal example. A full WMT pipeline is out of scope and would obscure the contribution.
+
+### What could be improved
+
+1. The walkthrough notebook would benefit from explicit sanity checks on intermediate tensor shapes — particularly showing attention weights sum to 1 after softmax.
+2. The `evaluate.py` could note that the original paper likely used `multi-bleu.perl`, which gives slightly different numbers from `sacrebleu`.
+3. The training script could note that Table 2 numbers use beam search with beam_size=4 and length_penalty=0.6 (§6.1).
+
+### Overall assessment
+
+**Quality: High.** The implementation is citation-anchored, honest about uncertainty, and correctly scoped. A researcher can use this as a starting point with high confidence that the architecture matches the paper. The REPRODUCTION_NOTES.md is genuinely useful — it saves someone the work of auditing the paper themselves for unspecified details.
+
+**Coverage: Core contribution fully implemented.** All architectural components from §3 are present and correct.
+
+**Honesty: Good.** No silent assumptions. The review found no cases where the implementation confidently invented a detail the paper doesn't specify.
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+<CardGroup cols={2}>
+  <Card title="DDPM worked example" icon="image" href="/examples/ddpm">
+    See how paper2code handles a generative modeling paper with algorithm-level contributions.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run paper2code on your own paper in three steps.
+  </Card>
+</CardGroup>

@@ -1,0 +1,111 @@
+{
+  "projectType": "ai-ml",
+  "projectName": "paper2code",
+  "projectDescription": "An agent skill for Claude Code that converts any arXiv paper into a citation-anchored Python implementation, with systematic ambiguity auditing to flag every unspecified implementation detail.",
+  "theme": "luma",
+  "primaryColor": "#912d37",
+  "lightColor": "#776f67",
+  "darkColor": "#d3cfcc",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "what-you-get"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/usage-modes",
+              "guides/citation-anchoring",
+              "guides/ambiguity-flags",
+              "guides/contributing"
+            ]
+          },
+          {
+            "group": "Worked Examples",
+            "pages": [
+              "examples/attention-is-all-you-need",
+              "examples/ddpm"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Reference",
+        "groups": [
+          {
+            "group": "Pipeline Stages",
+            "pages": [
+              "reference/pipeline/paper-acquisition",
+              "reference/pipeline/contribution-identification",
+              "reference/pipeline/ambiguity-audit",
+              "reference/pipeline/code-generation",
+              "reference/pipeline/walkthrough-notebook"
+            ]
+          },
+          {
+            "group": "Guardrails",
+            "pages": [
+              "reference/guardrails/hallucination-prevention",
+              "reference/guardrails/scope-enforcement",
+              "reference/guardrails/badly-written-papers"
+            ]
+          },
+          {
+            "group": "Knowledge Base",
+            "pages": [
+              "reference/knowledge/transformer-components",
+              "reference/knowledge/training-recipes",
+              "reference/knowledge/loss-functions",
+              "reference/knowledge/paper-to-code-mistakes"
+            ]
+          },
+          {
+            "group": "Scaffolds & Scripts",
+            "pages": [
+              "reference/scaffolds",
+              "reference/scripts"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Citation anchoring — every generated line of code references the exact paper section and equation it implements",
+    "Ambiguity auditing — classifies every implementation detail as SPECIFIED, PARTIALLY_SPECIFIED, or UNSPECIFIED before writing code",
+    "UNSPECIFIED flag system — honest flagging of every implementation gap with common alternatives listed",
+    "Appendix mining — treats appendices, footnotes, and figure captions as first-class specification sources",
+    "Official code integration — searches for and cross-references authors' official repositories",
+    "Multi-mode generation — minimal, full, and educational modes for different use cases",
+    "Framework support — generates PyTorch (default), JAX, or NumPy implementations",
+    "5-stage pipeline — paper acquisition, contribution identification, ambiguity audit, code generation, walkthrough notebook"
+  ],
+  "publicApiSurface": [
+    "/paper2code <arxiv_url_or_id>",
+    "/paper2code <arxiv_id> --framework jax",
+    "/paper2code <arxiv_id> --mode full",
+    "/paper2code <arxiv_id> --mode educational",
+    "scripts/fetch_paper.py <arxiv_id> <output_dir>",
+    "scripts/extract_structure.py <paper_text_md> <output_dir>",
+    "pipeline/01_paper_acquisition.md",
+    "pipeline/02_contribution_identification.md",
+    "pipeline/03_ambiguity_audit.md",
+    "pipeline/04_code_generation.md",
+    "pipeline/05_walkthrough_notebook.md",
+    "guardrails/hallucination_prevention.md",
+    "guardrails/scope_enforcement.md",
+    "guardrails/badly_written_papers.md",
+    "knowledge/transformer_components.md",
+    "knowledge/training_recipes.md",
+    "knowledge/loss_functions.md",
+    "knowledge/paper_to_code_mistakes.md"
+  ]
+}

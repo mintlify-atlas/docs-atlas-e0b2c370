@@ -1,0 +1,162 @@
+---
+title: "Ambiguity flags"
+description: "How paper2code classifies every implementation detail before writing a single line of code."
+---
+
+Before generating any code, paper2code audits every implementation-relevant detail in the paper and classifies it. This audit determines what gets a citation, what gets flagged, and what gets noted as a gap. Understanding the classification system helps you read the generated output critically.
+
+## The three-tier classification
+
+| Class | Meaning |
+|-------|---------|
+| `SPECIFIED` | The paper states this explicitly — direct statement, table entry, equation, algorithm box, footnote, or appendix |
+| `PARTIALLY_SPECIFIED` | The paper mentions it but leaves details ambiguous, or defers to another paper with "following prior work" |
+| `UNSPECIFIED` | The paper says nothing — a choice must be made and flagged |
+
+The audit runs before code generation. Every item in `REPRODUCTION_NOTES.md` traces back to one of these three classes.
+
+## What counts as SPECIFIED
+
+A detail is SPECIFIED only when the paper states it explicitly. Common forms:
+
+- **Direct statement:** "We use d_model = 512" → SPECIFIED
+- **Table entry:** Table 3 shows "learning rate: 3e-4" → SPECIFIED
+- **Equation:** Eq. 4 defines the loss function → SPECIFIED
+- **Algorithm box:** Algorithm 1 lines 3–5 describe the update rule → SPECIFIED
+- **Footnote:** Footnote 3 says "we clip gradients at 1.0" → SPECIFIED
+- **Appendix:** Appendix B Table 6 shows "warmup_steps = 4000" → SPECIFIED
+
+<Warning>
+Appendices, footnotes, and figure captions count as first-class sources. paper2code reads them. A hyperparameter buried in Appendix D is just as SPECIFIED as one in the main text.
+</Warning>
+
+## What does NOT count as SPECIFIED
+
+These patterns are common in ML papers and are all traps:
+
+| Paper says | Classification |
+|-----------|----------------|
+| "We use standard optimization" | **UNSPECIFIED** — standard according to whom? Which hyperparameters? |
+| "Following prior work [23]" | **PARTIALLY_SPECIFIED** — [23] must be checked, and differences flagged |
+| "We use Adam" | **PARTIALLY_SPECIFIED** — Adam has β₁, β₂, ε parameters; are they stated? |
+| "Similar architecture to [X]" | **PARTIALLY_SPECIFIED** — similar is not identical; what differs? |
+| "Standard hyperparameters" | **UNSPECIFIED** — whose defaults? PyTorch? TensorFlow? They differ. |
+| "Default settings" | **UNSPECIFIED** |
+| "We follow standard practice" | **UNSPECIFIED** — this phrase means nothing actionable |
+
+## The UNSPECIFIED comment protocol
+
+When an UNSPECIFIED detail requires a concrete choice in code, the comment must have exactly three parts:
+
+```python
+# [UNSPECIFIED] {What the paper doesn't specify}
+# Using: {your choice}
+# Alternatives: {other reasonable choices}
+```
+
+A complete example:
+
+```python
+# [UNSPECIFIED] Paper does not state activation function in the feed-forward network
+# Using: GELU (most common in recent transformer implementations)
+# Alternatives: ReLU (original transformer), SiLU/Swish (used in LLaMA, PaLM)
+self.activation = nn.GELU()
+```
+
+<Warning>
+Never write just `self.activation = nn.GELU()  # standard choice`. This hides the fact that the paper didn't specify it. A researcher reading this will think GELU was in the paper.
+</Warning>
+
+## Equation ground truth rule
+
+When prose and an equation conflict, implement the equation. Equations are more precise than prose.
+
+```python
+# §3.2, Eq. 4 — loss = -log(exp(sim(z_i, z_j)/τ) / Σ_k exp(sim(z_i, z_k)/τ))
+# NOTE: The prose in §3.2 says "we average over all positive pairs" but Eq. 4
+# sums rather than averages. We implement Eq. 4 as written.
+```
+
+This rule applies even when the equation looks like a typo. Implement it, flag the likely error, and note what the authors probably meant.
+
+## Common traps
+
+### The "standard" trap
+
+Papers use "standard" to mean many things. None of them are actionable without more information.
+
+| Paper says | What to ask |
+|-----------|-------------|
+| "standard transformer" | Pre-norm or post-norm? How many layers? Which attention variant? |
+| "standard augmentation" | Which augmentations? Random crop size? Flip probability? |
+| "standard preprocessing" | Which tokenizer? What normalization? What sequence length? |
+| "standard evaluation" | Which metric implementation? What post-processing? |
+
+Flag all of these as UNSPECIFIED.
+
+### The "we found" trap
+
+When a paper says "we found that X works better," treat the choice as `[ASSUMPTION]`, not `[SPECIFIED]`. "Better" is relative to the authors' setup, scale, and dataset.
+
+```python
+# [ASSUMPTION] Using pre-norm based on "we found pre-norm more stable" in §4.1
+# The paper uses post-norm in Figure 1 but pre-norm in experiments — ambiguous
+```
+
+### Framework translation traps
+
+Different frameworks have different conventions. Papers rarely clarify which they used.
+
+**Batch normalization momentum**
+
+PyTorch and TensorFlow use opposite momentum conventions:
+- PyTorch `momentum=0.1` means: `running_mean = 0.9 * running_mean + 0.1 * batch_mean`
+- TensorFlow `momentum=0.9` means the same thing
+
+If a paper says "momentum = 0.9," check which framework they used. The number alone is ambiguous.
+
+**Dropout rate vs. keep probability**
+
+Papers almost always mean drop probability. But older papers (pre-2017) sometimes state keep probability.
+
+```python
+# [UNSPECIFIED] Paper states "dropout 0.1" — interpreting as drop probability = 0.1 (keep = 0.9)
+# Older papers sometimes use keep probability convention; verify if results differ
+self.dropout = nn.Dropout(p=0.1)
+```
+
+**LayerNorm epsilon**
+
+Papers almost never specify this. Do not silently choose one.
+
+```python
+# [UNSPECIFIED] Paper does not state epsilon for LayerNorm — using 1e-6 (common default)
+# Alternatives: 1e-5 (PyTorch default), 1e-8 (some implementations)
+self.norm = nn.LayerNorm(d_model, eps=1e-6)
+```
+
+### The initialization trap
+
+Weight initialization is almost never specified in papers but matters for training stability. Always flag it:
+
+```python
+# [UNSPECIFIED] Paper does not describe weight initialization
+# Using: PyTorch defaults (Kaiming uniform for Linear, uniform for Embedding)
+# Alternatives: Xavier uniform (common for transformers), normal init with std=0.02
+# NOTE: Initialization can significantly affect training stability and convergence
+```
+
+## Prohibited phrases in code comments
+
+<Warning>
+Never write these in generated code — they hide gaps as if they were decisions:
+
+- `# standard practice`
+- `# as usual`
+- `# for simplicity` (as justification for deviating from the paper)
+- `# typically`
+- `# it's well known that`
+- `# should work`
+</Warning>
+
+Each of these phrases signals a silent assumption. Replace them with an explicit `[UNSPECIFIED]` comment or a `§X.Y` citation.

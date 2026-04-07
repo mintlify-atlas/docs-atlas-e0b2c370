@@ -1,97 +1,70 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "paper2code"
+description: "Turn any arXiv paper into a citation-anchored Python implementation. Every line of generated code references the exact paper section it implements — and every gap is flagged, never silently filled."
 ---
 
-## Setting up
+paper2code is a skill for Claude Code that converts arXiv research papers into working Python implementations. Unlike naive code generation, it audits every implementation detail before writing a single line — classifying each choice as specified, partially specified, or unspecified. The result is code you can trust because you can verify every decision against the paper.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install the skill and implement your first paper in minutes
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="What you get" icon="folder-open" href="/what-you-get">
+    Explore the full output structure — from model code to reproduction notes
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Ambiguity flags" icon="flag" href="/guides/ambiguity-flags">
+    Understand how SPECIFIED, UNSPECIFIED, and ASSUMPTION tags work
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="Worked examples" icon="graduation-cap" href="/examples/attention-is-all-you-need">
+    See complete output for Attention Is All You Need and DDPM
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Why paper2code
 
-Everything you need to create world-class documentation.
+ML papers are notoriously vague. Critical hyperparameters are buried in appendices or omitted entirely. "Standard settings" refers to nothing specific. When you implement a paper manually, you spend more time detective-working than coding.
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+Naive LLM code generation makes this worse — it fills every gap silently and confidently. You get something that runs but doesn't match the paper, and you can't tell which parts are from the paper and which were invented by the model.
 
-## Need inspiration?
+paper2code solves this with a 5-stage pipeline:
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+<Steps>
+  <Step title="Paper acquisition">
+    Fetches the arXiv PDF and extracts full text with math notation preserved. Appendices, footnotes, and figure captions are treated as first-class sources.
+  </Step>
+  <Step title="Contribution identification">
+    Identifies the single core contribution of the paper and classifies the paper type to determine what to implement.
+  </Step>
+  <Step title="Ambiguity audit">
+    Every implementation-relevant detail — architecture, training, data, evaluation — is classified as SPECIFIED, PARTIALLY_SPECIFIED, or UNSPECIFIED before any code is written.
+  </Step>
+  <Step title="Code generation">
+    Generates citation-anchored Python code. Every class references the paper section it implements. Every unspecified choice is flagged with alternatives.
+  </Step>
+  <Step title="Walkthrough notebook">
+    Creates a Jupyter notebook linking paper sections to code with runnable sanity checks on CPU with toy dimensions.
+  </Step>
+</Steps>
+
+## Key features
+
+<CardGroup cols={2}>
+  <Card title="Citation anchoring" icon="link">
+    Every non-trivial code decision is anchored to the paper with `§3.2` or `§3.2, Eq. 4` style references inline.
+  </Card>
+  <Card title="Honest uncertainty" icon="circle-question">
+    Unspecified choices are flagged with `[UNSPECIFIED]` comments listing the chosen default and alternatives.
+  </Card>
+  <Card title="Appendix mining" icon="magnifying-glass">
+    Appendices, footnotes, and figure captions are treated as first-class specification sources — not ignored.
+  </Card>
+  <Card title="Official code lookup" icon="code-branch">
+    Automatically searches for and cross-references the authors' official implementation to resolve ambiguities.
+  </Card>
+  <Card title="Multiple modes" icon="sliders">
+    Minimal (default), full (training + data pipeline), and educational (extra comments + paper guide) modes.
+  </Card>
+  <Card title="Framework choice" icon="layer-group">
+    Generate implementations in PyTorch (default), JAX, or NumPy.
+  </Card>
+</CardGroup>

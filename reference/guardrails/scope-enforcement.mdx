@@ -1,0 +1,198 @@
+---
+title: 'Scope enforcement'
+description: 'How to decide what to implement and what to skip when translating a paper to code.'
+keywords: ['scope', 'guardrail', 'in-scope', 'out-of-scope', 'paper2code']
+---
+
+Implementing too much adds noise. Implementing too little is useless. This page makes scope decisions explicit and traceable so that a focused, correct implementation of the core contribution is produced every time.
+
+<Note>
+A focused, correct implementation of the core contribution is infinitely better than a sprawling implementation with guessed peripherals.
+</Note>
+
+---
+
+## The scope decision tree
+
+For each component you're considering implementing, walk through this tree:
+
+```
+Is this component the paper's core contribution?
+├── YES → ALWAYS IN SCOPE. Implement fully with citation anchoring.
+│
+└── NO →
+    Does the paper describe this component in detail (equations, pseudocode, algorithm box)?
+    ├── YES →
+    │   Is this component necessary to understand the core contribution?
+    │   ├── YES → IN SCOPE. Implement with citations.
+    │   └── NO → OUT OF SCOPE. Note its existence, don't implement.
+    │
+    └── NO →
+        Does the paper reference another paper for this component?
+        ├── YES → REFERENCE ONLY. Import or note the dependency.
+        │         Add a comment: "§X.Y — uses {component} from {reference}"
+        │
+        └── NO →
+            Is this a standard ML component (optimizer, standard layer, etc.)?
+            ├── YES → USE FRAMEWORK DEFAULT. Import from PyTorch/library.
+            │         Don't reimplement. Document which version you're using.
+            │
+            └── NO →
+                You've found something the paper assumes you know but doesn't explain.
+                Flag it in REPRODUCTION_NOTES.md and use a reasonable default.
+```
+
+---
+
+## Scope by paper type
+
+### Type (a): New architecture paper
+
+| Component | In scope? | Notes |
+|-----------|-----------|-------|
+| Model architecture | ✅ Always | This IS the contribution |
+| Forward pass | ✅ Always | Demonstrates the architecture |
+| Loss function | ⚠️ Conditional | Only if the paper defines a custom loss |
+| Training loop | ❌ Minimal | Provide a single forward+backward example, not full training |
+| Data pipeline | ❌ Skeleton | Dataset class with TODOs, not full implementation |
+| Evaluation | ⚠️ Conditional | Metric computation code if paper reports specific metrics |
+| Distributed training | ❌ Never | Unless the architecture paper is about distributed/parallel architectures |
+| Visualization | ❌ Never | Unless attention visualization IS the contribution |
+
+### Type (b): New training method or loss function
+
+| Component | In scope? | Notes |
+|-----------|-----------|-------|
+| Model architecture | ❌ Import | Import or reference the base architecture used |
+| Loss function | ✅ Always | This IS (or is part of) the contribution |
+| Training loop | ✅ Always | The training procedure IS the contribution |
+| Training algorithm | ✅ Always | Algorithm box should be implemented precisely |
+| Data pipeline | ⚠️ Conditional | If the training method involves special data handling |
+| Evaluation | ✅ Yes | Need to verify the training method produces expected results |
+| LR schedule | ✅ Yes | Usually critical for training methods |
+| Optimizer | ✅ Yes | If the paper proposes or requires a specific optimizer |
+
+### Type (c): New inference technique
+
+| Component | In scope? | Notes |
+|-----------|-----------|-------|
+| Model architecture | ❌ Import | The model already exists |
+| Inference algorithm | ✅ Always | This IS the contribution |
+| Training | ❌ Never | No training happens at inference time |
+| Data preprocessing | ⚠️ Conditional | Only if inference requires special preprocessing |
+| Evaluation | ✅ Yes | Demonstrate the inference technique produces expected output |
+
+### Type (d): New dataset or benchmark
+
+| Component | In scope? | Notes |
+|-----------|-----------|-------|
+| Dataset class | ✅ Always | This IS the contribution |
+| Data loading/preprocessing | ✅ Always | How to load and prepare the data |
+| Evaluation framework | ✅ Always | Metrics and evaluation protocol |
+| Baseline models | ❌ Reference | Note what baselines were used, don't reimplement |
+| Dataset download | ⚠️ Instructions | Provide clear instructions, don't auto-download |
+
+### Type (e): Theoretical with empirical validation
+
+| Component | In scope? | Notes |
+|-----------|-----------|-------|
+| Experimental setup | ✅ Yes | The setup that validates the theory |
+| Measurement code | ✅ Yes | What is measured and how |
+| Model architecture | ⚠️ Conditional | Only if experiments require a specific architecture |
+| Training | ⚠️ Conditional | Only the specific training setup used in experiments |
+| Proof verification | ❌ Never | Proofs are not code |
+
+### Type (f): System/engineering paper
+
+| Component | In scope? | Notes |
+|-----------|-----------|-------|
+| System design | ✅ Always | This IS the contribution |
+| Performance benchmarks | ⚠️ Document | Document the benchmark setup; may not be reproducible |
+| Low-level optimizations | ⚠️ Conditional | If they can be expressed in Python; CUDA kernels are out of scope |
+| Integration code | ❌ Usually not | System papers often can't be minimally reproduced |
+
+---
+
+## Mode-specific scope overrides
+
+### Minimal mode (default)
+
+- Stick strictly to the decision tree above.
+- Training loop: only if the contribution IS training.
+- Data pipeline: skeleton only.
+- No distributed training, no checkpointing, no logging.
+
+### Full mode
+
+- Everything in minimal, plus:
+- Full training loop with all paper-specified hyperparameters.
+- Data pipeline with preprocessing (user still provides data).
+- Evaluation pipeline (not just metric functions).
+- Checkpointing (minimal, for training).
+- Learning rate schedule visualization.
+
+### Educational mode
+
+- Everything in minimal, plus:
+- Extra comments explaining ML concepts.
+- Extended walkthrough notebook with theory sections.
+- `PAPER_GUIDE.md` that walks through the paper section by section.
+
+---
+
+## Explicit exclusions
+
+These are never in scope regardless of mode:
+
+1. **Baselines and comparison methods.** The paper compares against X, Y, Z — implement only the paper's contribution, not X, Y, Z.
+2. **Ablation variants.** If the paper ablates components A, B, C — implement the full model with A+B+C, not each variant separately.
+3. **Multi-GPU/distributed training infrastructure.** Unless the paper's contribution IS the distributed strategy.
+4. **Experiment tracking and logging.** No wandb, no tensorboard, no MLflow setup.
+5. **Docker/container configuration.** Not relevant to understanding the paper.
+6. **CI/CD, linting, formatting configuration.** This is a research scaffold, not a production project.
+7. **Unit tests.** The walkthrough notebook serves as the verification layer.
+8. **Dataset downloading.** Provide instructions; never download automatically.
+9. **Pre-trained weight downloading.** Reference where to get them; never download.
+10. **Web interfaces, APIs, or demos.** Out of scope entirely.
+
+---
+
+## Handling scope creep
+
+During code generation you may be tempted to add "just one more thing." Resist this unless all three conditions hold:
+
+1. The "one more thing" is directly specified in the paper, AND
+2. It is necessary for the core contribution to make sense, AND
+3. Leaving it out would make the implementation misleading.
+
+If it's "nice to have" — leave it out.
+
+---
+
+## Documenting scope decisions
+
+In `REPRODUCTION_NOTES.md`, include a scope section:
+
+```markdown
+## Scope decisions
+
+### Implemented
+- {Component} — reason: {core contribution / necessary for X / etc.}
+
+### Intentionally excluded
+- {Component} — reason: {baseline method / standard component imported from X / not described in paper}
+
+### Would need for full reproduction
+- {Component} — what it is, where to get it, why we didn't include it
+```
+
+This makes scope decisions transparent. A researcher reading `REPRODUCTION_NOTES.md` should understand exactly what this implementation covers and what it doesn't.
+
+<CardGroup cols={2}>
+  <Card title="Hallucination prevention" icon="shield" href="/reference/guardrails/hallucination-prevention">
+    Flag every unspecified implementation detail.
+  </Card>
+  <Card title="Handling poorly written papers" icon="file-question" href="/reference/guardrails/badly-written-papers">
+    Resolve vague, inconsistent, or incomplete papers.
+  </Card>
+</CardGroup>

@@ -1,0 +1,892 @@
+---
+title: "Output scaffolds"
+description: "Templates used internally by the paper2code skill when generating output files for a paper implementation."
+---
+
+Scaffolds are the starting-point templates that the skill fills in when it generates your implementation. Each scaffold defines the structure, docstring conventions, placeholder naming, and shape-comment style that every generated file follows. You don't call scaffolds directly — the skill populates them during the code-generation stages.
+
+Placeholders use double-brace syntax: `{{PLACEHOLDER_NAME}}`. The skill replaces every placeholder with content extracted from the paper.
+
+<AccordionGroup>
+
+  <Accordion title="model_template.py — model architecture">
+
+    Defines the `ModelConfig` dataclass, sub-module classes, and the top-level model class. Every parameter in `ModelConfig` is annotated with a paper section citation or an `[UNSPECIFIED]` flag. Sub-modules follow the paper's component breakdown; every tensor operation in `forward()` carries a shape comment.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```python model_template.py
+    """
+    {{PAPER_TITLE}} — Model Architecture
+
+    Paper: https://arxiv.org/abs/{{ARXIV_ID}}
+    Authors: {{AUTHORS}}
+    Year: {{YEAR}}
+
+    Implements: {{ONE_LINE_DESCRIPTION}}
+
+    Section references:
+      {{§SECTION_1}} — {{DESCRIPTION_1}}
+      {{§SECTION_2}} — {{DESCRIPTION_2}}
+      {{§SECTION_3}} — {{DESCRIPTION_3}}
+
+    Usage:
+        from src.model import {{MODEL_CLASS}}, ModelConfig
+
+        config = ModelConfig()
+        model = {{MODEL_CLASS}}(config)
+        output = model(input_tensor)
+    """
+
+    import math
+    from dataclasses import dataclass, field
+    from typing import Optional, Tuple, List
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+
+    # ---------------------------------------------------------------------------
+    # Configuration
+    # ---------------------------------------------------------------------------
+
+    @dataclass
+    class ModelConfig:
+        """All model hyperparameters.
+
+        Values from {{PAPER_TITLE}} unless marked [UNSPECIFIED].
+        Matches configs/base.yaml — change values there, not here.
+        """
+        # Architecture — §{{ARCH_SECTION}}
+        # {{PARAM_1_NAME}}: {{TYPE}} = {{VALUE}}  # §X.Y — "quote from paper"
+        # {{PARAM_2_NAME}}: {{TYPE}} = {{VALUE}}  # [UNSPECIFIED] — our choice, alternatives: ...
+
+        pass  # REPLACE with actual config fields
+
+
+    # ---------------------------------------------------------------------------
+    # Sub-modules
+    # ---------------------------------------------------------------------------
+
+    class {{COMPONENT_A}}(nn.Module):
+        """§{{SECTION}} — {{Description of component from paper}}.
+
+        "{{Exact quote from paper describing this component}}"
+        """
+
+        def __init__(self, config: ModelConfig):
+            super().__init__()
+            # §{{SECTION}} — build layers as described
+            pass  # REPLACE with actual layers
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            """
+            Args:
+                x: {{description}} — shape: (batch, {{dims}})
+
+            Returns:
+                {{description}} — shape: (batch, {{dims}})
+            """
+            # §{{SECTION}} — forward pass
+            # Every tensor operation gets a shape comment:
+            # x = self.linear(x)  # (batch, seq_len, d_model) -> (batch, seq_len, d_ff)
+            pass  # REPLACE with actual forward pass
+
+
+    class {{COMPONENT_B}}(nn.Module):
+        """§{{SECTION}} — {{Description of component from paper}}."""
+
+        def __init__(self, config: ModelConfig):
+            super().__init__()
+            pass  # REPLACE
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            pass  # REPLACE
+
+
+    # ---------------------------------------------------------------------------
+    # Main Model
+    # ---------------------------------------------------------------------------
+
+    class {{MODEL_CLASS}}(nn.Module):
+        """§{{SECTION}} — {{Paper's name for the full model}}.
+
+        Composed of:
+          - {{COMPONENT_A}} (§{{SECTION_A}})
+          - {{COMPONENT_B}} (§{{SECTION_B}})
+
+        "{{Quote from paper describing the overall model}}"
+        """
+
+        def __init__(self, config: ModelConfig):
+            super().__init__()
+            self.config = config
+
+            # Build model components
+            # REPLACE with actual component instantiation
+
+        def forward(
+            self,
+            x: torch.Tensor,
+            # Add other inputs as needed (mask, labels, etc.)
+        ) -> torch.Tensor:
+            """Forward pass following §{{SECTION}} description.
+
+            Args:
+                x: {{description}} — shape: (batch, {{input_dims}})
+
+            Returns:
+                {{description}} — shape: (batch, {{output_dims}})
+            """
+            # §{{SECTION}} — step-by-step forward pass
+            # Mirror the paper's description order
+            # Shape comments on every operation
+            pass  # REPLACE
+
+        def __repr__(self) -> str:
+            """Print architecture summary."""
+            total_params = sum(p.numel() for p in self.parameters())
+            trainable_params = sum(p.numel() for p in self.parameters() if p.requires_grad)
+            return (
+                f"{self.__class__.__name__}(\n"
+                f"  config={self.config},\n"
+                f"  total_params={total_params:,},\n"
+                f"  trainable_params={trainable_params:,}\n"
+                f")"
+            )
+    ```
+
+    </Accordion>
+
+    **Key placeholders**
+
+    | Placeholder | Filled with |
+    |---|---|
+    | `{{MODEL_CLASS}}` | Class name derived from the paper title |
+    | `{{COMPONENT_A}}`, `{{COMPONENT_B}}` | Sub-module class names from the paper's architecture description |
+    | `{{ARCH_SECTION}}` | Section number that specifies the architecture |
+    | `{{PARAM_1_NAME}}` / `{{PARAM_2_NAME}}` | Hyperparameter names extracted from the paper |
+
+  </Accordion>
+
+  <Accordion title="loss_template.py — loss function">
+
+    Defines a single `nn.Module` loss class. The docstring embeds the exact equation from the paper, a mathematical formulation block, and any numerical stability notes.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```python loss_template.py
+    """
+    {{PAPER_TITLE}} — Loss Functions
+
+    Paper: https://arxiv.org/abs/{{ARXIV_ID}}
+    Implements: {{LOSS_DESCRIPTION}}
+
+    Section references:
+      {{§SECTION}}, Eq. {{N}} — {{DESCRIPTION}}
+    """
+
+    import torch
+    import torch.nn as nn
+    import torch.nn.functional as F
+
+
+    class {{LOSS_CLASS}}(nn.Module):
+        """§{{SECTION}}, Eq. {{N}} — {{Loss name from paper}}.
+
+        "{{Exact quote from paper describing the loss function}}"
+
+        Mathematical formulation:
+            {{L = formula as written in paper}}
+
+        Args:
+            {{param}}: {{description}} — §{{SECTION}} specifies {{value}}
+        """
+
+        def __init__(self, {{params}}):
+            super().__init__()
+            # §{{SECTION}} — loss hyperparameters
+            pass  # REPLACE with actual parameters
+
+        def forward(
+            self,
+            predictions: torch.Tensor,
+            targets: torch.Tensor,
+        ) -> torch.Tensor:
+            """Compute loss.
+
+            Args:
+                predictions: model output — shape: (batch, {{dims}})
+                targets: ground truth — shape: (batch, {{dims}})
+
+            Returns:
+                Scalar loss value
+            """
+            # §{{SECTION}}, Eq. {{N}} — step-by-step following the equation
+            # Each intermediate computation gets a shape comment
+
+            # NOTE on numerical stability:
+            # {{describe any stability considerations}}
+
+            pass  # REPLACE with actual loss computation
+    ```
+
+    </Accordion>
+
+    **Key placeholders**
+
+    | Placeholder | Filled with |
+    |---|---|
+    | `{{LOSS_CLASS}}` | Loss class name from the paper |
+    | `{{LOSS_DESCRIPTION}}` | One-line description of what the loss computes |
+    | `Eq. {{N}}` | Equation number cited in the paper |
+
+  </Accordion>
+
+  <Accordion title="data_template.py — dataset class">
+
+    Provides a `Dataset` subclass skeleton and a `build_dataloader` factory. The class docstring includes dataset download instructions and a description of the preprocessing pipeline. `_load_samples()` and `_preprocess()` are left as `NotImplementedError` stubs for you to implement.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```python data_template.py
+    """
+    {{PAPER_TITLE}} — Dataset and Data Loading
+
+    Paper: https://arxiv.org/abs/{{ARXIV_ID}}
+    Implements: Data loading for {{DATASET_NAME}}
+
+    Section references:
+      {{§SECTION}} — {{data description}}
+
+    NOTE: This file provides the Dataset class skeleton. You must:
+      1. Download the dataset from {{DATASET_URL}}
+      2. Set the data_dir in configs/base.yaml
+      3. Implement any dataset-specific preprocessing (marked with TODO)
+    """
+
+    from pathlib import Path
+    from typing import Dict, Optional, Tuple
+
+    import torch
+    from torch.utils.data import Dataset, DataLoader
+
+
+    class {{DATASET_CLASS}}(Dataset):
+        """§{{SECTION}} — Dataset for {{PAPER_TITLE}}.
+
+        "{{Quote from paper about the dataset used}}"
+
+        Expected data format:
+            {{describe the expected file structure / data format}}
+
+        How to obtain:
+            {{instructions for downloading the dataset}}
+
+        Preprocessing:
+            {{describe preprocessing steps from the paper}}
+        """
+
+        def __init__(
+            self,
+            data_dir: str,
+            split: str = "train",
+            # Add other params from config
+        ):
+            """
+            Args:
+                data_dir: path to the dataset root directory
+                split: one of "train", "val", "test"
+            """
+            self.data_dir = Path(data_dir)
+            self.split = split
+
+            # TODO: Load file list / metadata
+            # self.samples = self._load_samples()
+
+        def _load_samples(self):
+            """Load sample paths/metadata for the given split.
+
+            TODO: Implement based on the dataset structure.
+            """
+            raise NotImplementedError(
+                f"Dataset loading not implemented. "
+                f"Download the dataset and implement _load_samples() for your data format."
+            )
+
+        def _preprocess(self, sample):
+            """Apply preprocessing as described in §{{SECTION}}.
+
+            TODO: Implement the paper's preprocessing pipeline:
+            {{list preprocessing steps from the paper}}
+            """
+            raise NotImplementedError("Implement preprocessing per §{{SECTION}}")
+
+        def __len__(self) -> int:
+            return len(self.samples)
+
+        def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
+            """Load and preprocess a single sample.
+
+            Returns:
+                dict with keys:
+                    {{key_1}}: {{description}} — shape: {{shape}}
+                    {{key_2}}: {{description}} — shape: {{shape}}
+            """
+            # TODO: Implement sample loading
+            raise NotImplementedError("Implement __getitem__ for your data format")
+
+
+    def build_dataloader(
+        config: dict,
+        split: str = "train",
+    ) -> DataLoader:
+        """Build a DataLoader from config.
+
+        Args:
+            config: data config dict from base.yaml
+            split: "train", "val", or "test"
+        """
+        dataset = {{DATASET_CLASS}}(
+            data_dir=config["data_dir"],
+            split=split,
+        )
+
+        return DataLoader(
+            dataset,
+            batch_size=config.get("batch_size", 32),
+            shuffle=(split == "train"),
+            num_workers=config.get("num_workers", 4),
+            pin_memory=True,
+            drop_last=(split == "train"),
+        )
+    ```
+
+    </Accordion>
+
+    **Key placeholders**
+
+    | Placeholder | Filled with |
+    |---|---|
+    | `{{DATASET_CLASS}}` | Dataset class name from the paper |
+    | `{{DATASET_NAME}}` | Dataset name as cited in the paper |
+    | `{{DATASET_URL}}` | Download link extracted from the paper or abstract |
+
+  </Accordion>
+
+  <Accordion title="train_template.py — training loop">
+
+    Provides `load_config`, `build_optimizer`, `build_scheduler`, and a `train()` entry point. The optimizer builder applies weight-decay separation (biases and norm layers are excluded by default, flagged as `[ASSUMPTION]`). The scheduler supports `cosine`, `linear`, and `constant` schedules with optional warmup.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```python train_template.py
+    """
+    {{PAPER_TITLE}} — Training Loop
+
+    Paper: https://arxiv.org/abs/{{ARXIV_ID}}
+    Implements: {{TRAINING_DESCRIPTION}}
+
+    Section references:
+      {{§SECTION}} — {{DESCRIPTION}}
+    """
+
+    import math
+    import yaml
+    from pathlib import Path
+    from typing import Optional
+
+    import torch
+    import torch.nn as nn
+    from torch.utils.data import DataLoader
+
+    from src.model import {{MODEL_CLASS}}, ModelConfig
+    from src.loss import {{LOSS_FN}}
+    from src.data import {{DATASET_CLASS}}
+
+
+    def load_config(config_path: str = "configs/base.yaml") -> dict:
+        """Load training configuration."""
+        with open(config_path) as f:
+            return yaml.safe_load(f)
+
+
+    def build_optimizer(
+        model: nn.Module,
+        config: dict,
+    ) -> torch.optim.Optimizer:
+        """Build optimizer with parameter groups.
+
+        §{{SECTION}} — "{{quote about optimizer}}"
+        """
+        # [ASSUMPTION] Not applying weight decay to biases and normalization layers
+        no_decay = ["bias", "LayerNorm.weight", "LayerNorm.bias"]
+        param_groups = [
+            {
+                "params": [
+                    p for n, p in model.named_parameters()
+                    if not any(nd in n for nd in no_decay) and p.requires_grad
+                ],
+                "weight_decay": config["training"]["weight_decay"],
+            },
+            {
+                "params": [
+                    p for n, p in model.named_parameters()
+                    if any(nd in n for nd in no_decay) and p.requires_grad
+                ],
+                "weight_decay": 0.0,
+            },
+        ]
+
+        optimizer_name = config["training"]["optimizer"]
+        lr = config["training"]["lr"]
+
+        if optimizer_name == "adam":
+            return torch.optim.Adam(param_groups, lr=lr,
+                betas=tuple(config["training"].get("betas", [0.9, 0.999])),
+                eps=config["training"].get("eps", 1e-8))
+        elif optimizer_name == "adamw":
+            return torch.optim.AdamW(param_groups, lr=lr,
+                betas=tuple(config["training"].get("betas", [0.9, 0.999])),
+                eps=config["training"].get("eps", 1e-8))
+        elif optimizer_name == "sgd":
+            return torch.optim.SGD(param_groups, lr=lr,
+                momentum=config["training"].get("momentum", 0.9))
+        else:
+            raise ValueError(f"Unknown optimizer: {optimizer_name}")
+
+
+    def build_scheduler(
+        optimizer: torch.optim.Optimizer,
+        config: dict,
+    ) -> Optional[torch.optim.lr_scheduler._LRScheduler]:
+        """Build learning rate scheduler.
+
+        §{{SECTION}} — "{{quote about LR schedule}}"
+        """
+        schedule = config["training"].get("schedule", "constant")
+        warmup_steps = config["training"].get("warmup_steps", 0)
+        total_steps = config["training"]["total_steps"]
+
+        if schedule == "constant":
+            return None
+        elif schedule == "cosine":
+            def lr_lambda(step):
+                if step < warmup_steps:
+                    return step / max(warmup_steps, 1)
+                progress = (step - warmup_steps) / max(total_steps - warmup_steps, 1)
+                return 0.5 * (1.0 + math.cos(math.pi * progress))
+            return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        elif schedule == "linear":
+            def lr_lambda(step):
+                if step < warmup_steps:
+                    return step / max(warmup_steps, 1)
+                return max(0.0, (total_steps - step) / max(total_steps - warmup_steps, 1))
+            return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+        else:
+            raise ValueError(f"Unknown schedule: {schedule}")
+
+
+    def train(config_path: str = "configs/base.yaml"):
+        """Main training loop."""
+        config = load_config(config_path)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        model_config = ModelConfig(
+            # REPLACE: populate from config dict
+        )
+        model = {{MODEL_CLASS}}(model_config).to(device)
+
+        optimizer = build_optimizer(model, config)
+        scheduler = build_scheduler(optimizer, config)
+        loss_fn = {{LOSS_FN}}()
+
+        # §{{SECTION}} — training procedure
+        gradient_clip = config["training"].get("gradient_clip", None)
+        total_steps = config["training"]["total_steps"]
+
+        model.train()
+        print(f"Starting training for {total_steps} steps")
+        print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+
+        # REPLACE: implement the actual training loop
+        # for epoch in range(max_epochs):
+        #     for batch in dataloader:
+        #         batch = {k: v.to(device) for k, v in batch.items()}
+        #         optimizer.zero_grad()
+        #         output = model(batch["input"])
+        #         loss = loss_fn(output, batch["target"])
+        #         loss.backward()
+        #         if gradient_clip is not None:
+        #             torch.nn.utils.clip_grad_norm_(model.parameters(), gradient_clip)
+        #         optimizer.step()
+        #         if scheduler is not None:
+        #             scheduler.step()
+
+
+    if __name__ == "__main__":
+        train()
+    ```
+
+    </Accordion>
+
+    **Built-in scheduler types**
+
+    | `schedule` value | Behaviour |
+    |---|---|
+    | `constant` | Returns `None`; PyTorch uses the base LR unchanged |
+    | `cosine` | Cosine annealing with optional linear warmup |
+    | `linear` | Linear decay with optional linear warmup |
+
+  </Accordion>
+
+  <Accordion title="evaluate_template.py — evaluation metrics">
+
+    Provides individual metric functions and a `compute_all_metrics` aggregator. Each function documents which paper section defines the metric and includes caveats about implementation choices (for example, which BLEU library to use).
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```python evaluate_template.py
+    """
+    {{PAPER_TITLE}} — Evaluation Metrics
+
+    Paper: https://arxiv.org/abs/{{ARXIV_ID}}
+    Implements: Metric computation for {{METRICS_LISTED}}
+
+    Section references:
+      {{§SECTION}} — {{evaluation methodology description}}
+
+    NOTE: This file provides metric computation functions only.
+          It does NOT handle data loading or model inference.
+          Pass predictions and targets to compute metrics.
+    """
+
+    from typing import Dict, List, Optional
+
+    import torch
+    import numpy as np
+
+
+    def compute_{{METRIC_1}}(
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> float:
+        """§{{SECTION}} — Compute {{metric name}}.
+
+        "{{Quote from paper about evaluation metric}}"
+
+        Args:
+            predictions: model output — shape: (batch, {{dims}})
+            targets: ground truth — shape: (batch, {{dims}})
+
+        Returns:
+            {{metric_name}} score as a float
+
+        NOTE: {{any caveats about metric implementation, e.g.,
+               "Different BLEU implementations give different numbers.
+                We use sacrebleu for reproducibility."}}
+        """
+        # §{{SECTION}} — metric computation
+        pass  # REPLACE with actual metric
+
+
+    def compute_all_metrics(
+        predictions: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> Dict[str, float]:
+        """Compute all evaluation metrics reported in the paper.
+
+        §{{SECTION}} — "We report {{metric_1}}, {{metric_2}}, and {{metric_3}}"
+
+        Args:
+            predictions: model output — shape: (batch, {{dims}})
+            targets: ground truth — shape: (batch, {{dims}})
+
+        Returns:
+            Dict mapping metric name to value
+        """
+        return {
+            "{{metric_1}}": compute_{{METRIC_1}}(predictions, targets),
+            # Add more metrics as needed
+        }
+    ```
+
+    </Accordion>
+
+    <Note>
+      This file computes metrics only. Data loading and model inference happen in `train.py`; pass the resulting tensors to these functions.
+    </Note>
+
+  </Accordion>
+
+  <Accordion title="config_template.yaml — hyperparameter config">
+
+    A single YAML file that centralises every hyperparameter. Each entry uses one of three annotation conventions so readers can immediately tell how confident each value is.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```yaml config_template.yaml
+    # Configuration for {{PAPER_TITLE}}
+    # Paper: https://arxiv.org/abs/{{ARXIV_ID}}
+    #
+    # CONVENTION:
+    #   - Lines with §X.Y cite the paper section specifying this value
+    #   - Lines with [UNSPECIFIED] mark choices not stated in the paper
+    #   - Lines with [FROM_OFFICIAL_CODE] are resolved from the authors' implementation
+    #
+    # All hyperparameters in one place. No magic numbers in code.
+
+    # ---------------------------------------------------------------------------
+    # Model architecture
+    # ---------------------------------------------------------------------------
+    model:
+      # §X.Y — "quote from paper specifying this value"
+      # param_name: value
+
+      # [UNSPECIFIED] — Paper does not state this. Common choices: A, B, C
+      # param_name: value
+
+    # ---------------------------------------------------------------------------
+    # Training
+    # ---------------------------------------------------------------------------
+    training:
+      # §X.Y — "quote from paper"
+      # optimizer: adam
+      # lr: 0.0001
+      # betas: [0.9, 0.999]       # [UNSPECIFIED] — using PyTorch Adam defaults
+      # eps: 1.0e-8               # [UNSPECIFIED] — using PyTorch Adam defaults
+      # weight_decay: 0.0         # [UNSPECIFIED] — no weight decay mentioned
+
+      # Learning rate schedule
+      # schedule: cosine          # §X.Y — "we use cosine annealing"
+      # warmup_steps: 1000        # §X.Y — "linear warmup for 1000 steps"
+      # total_steps: 100000       # §X.Y — "we train for 100k steps"
+
+      # Regularization
+      # dropout: 0.1              # §X.Y — "dropout rate of 0.1"
+      # gradient_clip: 1.0        # [UNSPECIFIED] — common default
+
+      # Batch
+      # batch_size: 256           # §X.Y — "batch size of 256"
+      # batch_size_note: "total"  # §X.Y — "total batch size across 8 GPUs"
+
+      # Hardware (for reference, not used in code)
+      # gpus: 8                   # §X.Y — "we use 8 V100 GPUs"
+      # precision: fp32           # [UNSPECIFIED] — mixed precision not mentioned
+
+    # ---------------------------------------------------------------------------
+    # Data
+    # ---------------------------------------------------------------------------
+    data:
+      # dataset: "{{DATASET_NAME}}"   # §X.Y — "we evaluate on {{DATASET}}"
+      # seq_length: 512               # §X.Y — "maximum sequence length of 512"
+      # vocab_size: 30000             # §X.Y or [UNSPECIFIED]
+
+    # ---------------------------------------------------------------------------
+    # Evaluation
+    # ---------------------------------------------------------------------------
+    eval:
+      # metric: "accuracy"            # §X.Y — "we report top-1 accuracy"
+      # eval_every: 1000              # [UNSPECIFIED] — evaluation frequency not stated
+    ```
+
+    </Accordion>
+
+    **Annotation conventions**
+
+    | Annotation | Meaning |
+    |---|---|
+    | `§X.Y` | Value is explicitly stated in this paper section |
+    | `[UNSPECIFIED]` | Paper does not state this value; the choice is ours |
+    | `[FROM_OFFICIAL_CODE]` | Value resolved by inspecting the authors' code |
+
+  </Accordion>
+
+  <Accordion title="readme_template.md — project README">
+
+    The README generated alongside the implementation. It includes a contribution summary, a quick-start code snippet, and a file-tree overview. It always links to `REPRODUCTION_NOTES.md` so readers know to check that document before using the code for research.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```markdown readme_template.md
+    # {{PAPER_TITLE}}
+
+    Implementation of [{{PAPER_TITLE}}](https://arxiv.org/abs/{{ARXIV_ID}}) ({{AUTHORS}}, {{YEAR}}).
+
+    ## What this implements
+
+    {{ONE_PARAGRAPH_CONTRIBUTION_STATEMENT}}
+
+    ## Quick start
+
+    ```bash
+    pip install -r requirements.txt
+    ```
+
+    ```python
+    from src.model import {{MODEL_CLASS}}, ModelConfig
+
+    config = ModelConfig()
+    model = {{MODEL_CLASS}}(config)
+
+    import torch
+    x = torch.randn({{EXAMPLE_INPUT_SHAPE}})
+    output = model(x)
+    print(output.shape)  # {{EXPECTED_OUTPUT_SHAPE}}
+    ```
+
+    ## File structure
+
+    ```
+    {{PAPER_SLUG}}/
+    ├── README.md                 # This file
+    ├── REPRODUCTION_NOTES.md     # Ambiguity audit — what's specified vs. assumed
+    ├── requirements.txt          # Dependencies
+    ├── src/
+    │   ├── model.py              # {{MODEL_DESCRIPTION}}
+    │   ├── loss.py               # {{LOSS_DESCRIPTION}}
+    │   ├── data.py               # {{DATA_DESCRIPTION}}
+    │   ├── train.py              # {{TRAIN_DESCRIPTION}}
+    │   ├── evaluate.py           # {{EVAL_DESCRIPTION}}
+    │   └── utils.py              # {{UTILS_DESCRIPTION}}
+    ├── configs/
+    │   └── base.yaml             # All hyperparameters — each cited or flagged
+    └── notebooks/
+        └── walkthrough.ipynb     # Paper sections → code → sanity checks
+    ```
+
+    ## Important: read REPRODUCTION_NOTES.md
+
+    This implementation flags every choice that the paper does not specify.
+    Before using this code for research, read `REPRODUCTION_NOTES.md`
+    to understand which implementation details are from the paper and which are our choices.
+
+    ## Citation
+
+    ```bibtex
+    {{BIBTEX_ENTRY}}
+    ```
+
+    ---
+
+    *Generated by [paper2code](https://github.com/PrathamLearnsToCode/paper2code) — citation-anchored paper implementation.*
+    ```
+
+    </Accordion>
+
+  </Accordion>
+
+  <Accordion title="reproduction_notes_template.md — reproduction notes">
+
+    A structured audit document that records every implementation decision: what the paper specifies, what is assumed, known deviations, expected results, debugging tips, and scope decisions. This is the most important document for anyone trying to reproduce results from the paper.
+
+    <Accordion title="Show template source" defaultOpen={false}>
+
+    ```markdown reproduction_notes_template.md
+    # Reproduction Notes: {{PAPER_TITLE}}
+
+    > This document records every implementation choice, whether it was specified by the paper,
+    > and what alternatives exist. If you're reproducing this paper, **read this first.**
+
+    ---
+
+    ## Paper
+
+    - **Title:** {{PAPER_TITLE}}
+    - **Authors:** {{AUTHORS}}
+    - **Year:** {{YEAR}}
+    - **ArXiv:** https://arxiv.org/abs/{{ARXIV_ID}}
+    - **Official code:** {{OFFICIAL_CODE_URL or "None found"}}
+
+    ---
+
+    ## What this implements
+
+    {{ONE_PARAGRAPH_CONTRIBUTION_STATEMENT — from Stage 2}}
+
+    ---
+
+    ## Verified against
+
+    - [ ] Paper equations (§X.Y, Eq. N)
+    - [ ] Paper Algorithm box (Algorithm 1)
+    - [ ] Official code (if available — link specific files/lines)
+    - [ ] Well-known reimplementation (name, link)
+    - [ ] None — implementation based solely on paper text
+
+    ---
+
+    ## Unspecified choices
+
+    Every implementation choice that the paper does not explicitly specify.
+
+    | Component | Our choice | Alternatives | Paper quote (if partial) | Section |
+    |-----------|-----------|--------------|--------------------------|---------|
+    | {{component}} | {{what we used}} | {{other options}} | {{quote or "—"}} | {{§X.Y or "—"}} |
+
+    ---
+
+    ## Known deviations
+
+    | Deviation | Paper says | We do | Reason |
+    |-----------|-----------|-------|--------|
+    | {{what}} | {{paper specification}} | {{our implementation}} | {{why we deviate}} |
+
+    ---
+
+    ## Expected results
+
+    | Metric | Paper's number | Dataset | Conditions |
+    |--------|---------------|---------|------------|
+    | {{metric}} | {{value}} | {{dataset}} | {{e.g., "Table 1, best config"}} |
+
+    **Note:** Exact reproduction of paper numbers requires matching ALL unspecified choices above,
+    plus having the exact training data, hardware, and random seeds. Small deviations (0.1–0.5%)
+    are normal even with correct implementations.
+
+    ---
+
+    ## Debugging tips
+
+    1. **{{Failure mode 1}}**: {{description and how to diagnose}}
+    2. **{{Failure mode 2}}**: {{description and how to diagnose}}
+    3. **{{Failure mode 3}}**: {{description and how to diagnose}}
+
+    ---
+
+    ## Scope decisions
+
+    ### Implemented
+    - {{Component}} — {{reason: core contribution / necessary for X}}
+
+    ### Intentionally excluded
+    - {{Component}} — {{reason: baseline method / standard component / not in paper scope}}
+
+    ### Needed for full reproduction (not included)
+    - {{Component}} — {{what it is, where to get it}}
+
+    ---
+
+    ## References
+
+    Papers referenced by this implementation:
+    - {{Citation}} — {{what was taken from this reference}}
+    ```
+
+    </Accordion>
+
+    **Sections in `REPRODUCTION_NOTES.md`**
+
+    | Section | Purpose |
+    |---|---|
+    | Verified against | Checklist of what the implementation has been cross-checked against |
+    | Unspecified choices | Table of every assumption not stated in the paper |
+    | Known deviations | Intentional departures from the paper, with justification |
+    | Expected results | Paper's reported numbers to validate against |
+    | Debugging tips | Common failure modes for this type of architecture |
+    | Scope decisions | What is and is not included, and why |
+
+  </Accordion>
+
+</AccordionGroup>

@@ -1,0 +1,214 @@
+---
+title: "Stage 2: Contribution identification"
+description: "Identify exactly what the paper contributes and define the implementation scope before writing any code."
+---
+
+## Purpose
+
+Before writing a single line of code, you must understand exactly what this paper contributes and what "implementing this paper" means. Stage 2 forces that clarity. Without it, you risk implementing the wrong thing — reimplementing a backbone the paper borrowed, or missing the actual contribution because it's described less prominently than the parts around it.
+
+## Input
+
+- Parsed paper sections from Stage 1
+- `paper_metadata.json` — includes `official_code` links if any were found in Stage 1
+
+## Output
+
+- `.paper2code_work/{ARXIV_ID}/contribution.md` — contribution statement, paper classification, and implementation scope
+
+## Reasoning protocol
+
+<Steps>
+  <Step title="Read the abstract and introduction">
+    Read the abstract and introduction twice:
+
+    - First read: understand what the paper claims to do
+    - Second read: find the **single sentence** that states the core contribution — usually in the abstract ("We propose…", "We introduce…", "In this work, we…") or in the final paragraph of the introduction ("Our contributions are…")
+
+    Answer these three questions before moving on:
+
+    1. What is the one thing this paper does that didn't exist before?
+    2. If you had to explain this paper in 10 seconds to an ML engineer, what would you say?
+    3. What would be missing from ML if this paper didn't exist?
+
+    Write the answer to the first question as a one-sentence contribution statement.
+  </Step>
+
+  <Step title="Classify the paper type">
+    The paper type determines what you implement. Pick the closest category:
+
+    <AccordionGroup>
+      <Accordion title="(a) New architecture — e.g. Transformer, ResNet, Vision Transformer, U-Net">
+        **What "implementing the core contribution" means:** The model architecture — layer definitions, forward pass, how components connect. The architecture _is_ the contribution.
+
+        **Priority sections:** Model / Architecture section, the figure showing the architecture, any algorithm boxes.
+
+        **What's secondary:** The training procedure (use standard), specific dataset preprocessing.
+      </Accordion>
+
+      <Accordion title="(b) New training method or loss function — e.g. DDPM, SimCLR, RLHF, DPO">
+        **What "implementing the core contribution" means:** The training loop, the loss function, the optimization procedure. The model architecture is usually borrowed from existing work.
+
+        **Priority sections:** Training / Objective section, loss function equations, algorithm boxes describing the training procedure.
+
+        **What's secondary:** Model architecture (often standard), dataset specifics.
+      </Accordion>
+
+      <Accordion title="(c) New inference or generation technique — e.g. beam search variants, nucleus sampling, classifier-free guidance">
+        **What "implementing the core contribution" means:** The inference algorithm. There may be no training at all.
+
+        **Priority sections:** Inference / Generation section, algorithm boxes, sampling or decoding procedures.
+
+        **What's secondary:** Training (none or standard), model architecture (usually pre-existing).
+      </Accordion>
+
+      <Accordion title="(d) New dataset or benchmark — e.g. ImageNet, GLUE, MMLU">
+        **What "implementing the core contribution" means:** The evaluation framework, metrics, and data loading pipeline. There may be baseline models, but they are not the contribution.
+
+        **Priority sections:** Dataset description, evaluation methodology, metric definitions.
+
+        **What's secondary:** Baseline model architectures (reference only).
+      </Accordion>
+
+      <Accordion title="(e) Theoretical analysis with empirical validation — e.g. Lottery Ticket Hypothesis, Scaling Laws">
+        **What "implementing the core contribution" means:** The experimental setup that validates the theory — what is measured, how, and with what specific procedures.
+
+        **Priority sections:** Experimental setup, measurement procedures.
+
+        **What's secondary:** The theory proofs (important to understand, but not to implement).
+      </Accordion>
+
+      <Accordion title="(f) System or engineering paper — e.g. Megatron-LM, FlashAttention, vLLM">
+        **What "implementing the core contribution" means:** The system design — often involves low-level optimizations, custom kernels, or infrastructure.
+
+        **Priority sections:** System design section, performance benchmarks, implementation details.
+
+        <Warning>
+          These papers often cannot be reproduced in a minimal implementation because the contribution _is_ the engineering. Flag this honestly in the contribution statement.
+        </Warning>
+      </Accordion>
+    </AccordionGroup>
+  </Step>
+
+  <Step title="Find the algorithm box">
+    Search the paper for formal algorithm descriptions — usually labeled "Algorithm 1", "Algorithm 2", etc.
+
+    Algorithm boxes are the most valuable specification source because:
+
+    - They are the most precise description of the procedure
+    - They resolve ambiguities that appear in prose descriptions
+    - They define variable names and control flow explicitly
+
+    If the prose says one thing and the algorithm box says another, **implement the algorithm box** and flag the discrepancy in the ambiguity audit.
+
+    If there is no algorithm box, note this explicitly — it means the implementation will rely more on equations and prose, which are more ambiguous.
+  </Step>
+
+  <Step title="Check for official code">
+    Check `paper_metadata.json` for the `official_code` field populated in Stage 1.
+
+    If official code repositories were found:
+
+    1. **Verify the link** — open the URL and confirm it's the authors' code for this paper, not an unrelated project or empty placeholder
+    2. **Note the framework** — PyTorch, JAX, or TensorFlow? This may inform your implementation choices
+    3. **Note the repo structure** — what files exist? This helps you understand the implementation scope
+    4. **Do not read the code in detail yet** — that happens in Stage 3 when resolving ambiguities. Here you only need to know the code exists and what it covers
+
+    Record the official code status in the contribution statement (Step 6).
+  </Step>
+
+  <Step title="Identify what to implement vs. reference">
+    Make three explicit lists before writing the contribution statement:
+
+    **IMPLEMENT** — you will write this code:
+    - The core contribution (as identified in Step 2)
+    - Any component described in enough detail to implement from the paper alone
+
+    **REFERENCE** — you will import or note as a dependency:
+    - Standard components the paper uses but didn't invent (e.g., "standard transformer encoder")
+    - Pre-trained models used as backbones
+    - Existing techniques referenced with "following [X]" or "similar to [X]"
+
+    **OUT OF SCOPE** — you will not touch:
+    - Baselines and comparison methods
+    - Ablation variants (unless the user specifically requests full mode)
+    - Dataset collection or annotation procedures
+    - Deployment-specific optimizations
+  </Step>
+
+  <Step title="Write the contribution statement">
+    Write a structured contribution statement and save it to `contribution.md`:
+
+    ```markdown
+    # Contribution Analysis
+
+    ## Paper
+    {title} ({year})
+    {authors}
+    arxiv: {id}
+
+    ## One-sentence summary
+    {what this paper does in one sentence}
+
+    ## Paper type
+    {(a)–(f) classification with justification}
+
+    ## Core contribution to implement
+    {One paragraph describing exactly what you will implement, referencing specific paper sections}
+
+    ## Algorithm specification
+    {Whether an algorithm box exists, and if so, which one is the primary specification}
+
+    ## Official code
+    {URL if found, or "None found"}
+    {Framework used in official code, if applicable}
+    {Brief note on what the official repo covers}
+
+    ## Implementation scope
+    ### Will implement:
+    - {item 1 — with paper section reference}
+    - {item 2 — with paper section reference}
+
+    ### Will reference (not reimplement):
+    - {item 1 — what it is, where to get it}
+
+    ### Out of scope:
+    - {item 1 — why}
+
+    ## Key sections for implementation
+    1. {Section X.Y — what it specifies}
+    2. {Section X.Y — what it specifies}
+    3. {Appendix A — what it specifies}
+    ```
+  </Step>
+
+  <Step title="Self-check before proceeding">
+    Before moving to Stage 3, answer each of these:
+
+    - Could a competent ML engineer read your contribution statement and know exactly what to build? If not, it's too vague.
+    - Have you identified the paper type correctly? Read the abstract once more.
+    - Have you checked the appendices for additional specification of the core contribution?
+    - Is there anything in your IMPLEMENT list that the paper doesn't actually describe in enough detail? If so, move it to REFERENCE or flag it.
+  </Step>
+</Steps>
+
+## Common mistakes at this stage
+
+**Trying to implement everything.** A paper about a new loss function doesn't need you to reimplement the backbone architecture. Import it.
+
+**Misidentifying the contribution.** A paper might describe a new architecture, but the actual contribution is the training recipe. Read what the authors claim, not what takes up the most pages.
+
+**Ignoring paper type effects on scope.** The same checklist item (e.g., "training loop") can be in-scope or out-of-scope depending on the paper type. A training method paper _must_ include the training loop. An architecture paper doesn't need more than a minimal example.
+
+**Skipping the algorithm box.** If Algorithm 1 exists and you don't read it carefully, you will implement based on noisy prose instead of a precise specification.
+
+**Ignoring official code.** Stage 1 automatically searches for code links, but you must verify them in Step 4. If official code exists and you skip it, you'll waste time on ambiguities the authors already resolved.
+
+<CardGroup cols={2}>
+  <Card title="Stage 1: Paper acquisition" icon="arrow-left" href="/reference/pipeline/paper-acquisition">
+    How the paper is fetched and structured
+  </Card>
+  <Card title="Stage 3: Ambiguity audit" icon="arrow-right" href="/reference/pipeline/ambiguity-audit">
+    Audit every implementation detail before generating code
+  </Card>
+</CardGroup>

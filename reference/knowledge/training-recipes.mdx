@@ -1,0 +1,279 @@
+---
+title: 'Training recipes'
+description: 'Common optimizer configurations, learning rate schedules, and training details that papers frequently assume without re-explaining.'
+keywords: ['training', 'optimizer', 'learning rate', 'batch size', 'Adam', 'AdamW', 'paper2code']
+---
+
+When a paper says "we use standard training settings," this page helps you determine what they probably mean — and helps you flag what's still ambiguous. These are not specifications; they are informed defaults. Always check whether the paper states specifics, and flag anything you fill in from this file as `[UNSPECIFIED]`.
+
+---
+
+## Optimizers
+
+### Adam (Kingma & Ba, 2014)
+
+Default parameters from the paper: β₁=0.9, β₂=0.999, ε=1e-8. PyTorch defaults match the Adam paper.
+
+But in practice:
+- Transformer papers often use β₂=0.98 (from Vaswani et al.).
+- Some NLP papers use β₂=0.95.
+- ε values vary: 1e-8 (default), 1e-6 (BERT), 1e-9 (Vaswani et al.).
+
+"We use Adam" does NOT mean these defaults — you must check.
+
+### AdamW (Loshchilov & Hutter, 2019)
+
+AdamW is NOT the same as Adam with L2 regularization:
+
+- **Adam + L2:** weight decay is applied to the gradient, which scales with the adaptive learning rate.
+- **AdamW:** weight decay is applied directly to the weights, decoupled from the gradient update.
+
+```python
+# Adam with L2 (WRONG if the paper says "AdamW" or "decoupled weight decay"):
+optimizer = torch.optim.Adam(params, lr=lr, weight_decay=0.01)
+
+# AdamW (correct decoupled weight decay):
+optimizer = torch.optim.AdamW(params, lr=lr, weight_decay=0.01)
+```
+
+<Note>
+Weight decay is usually NOT applied to bias terms and LayerNorm parameters. If the paper doesn't state this, implement it and flag as `[ASSUMPTION]`:
+
+```python
+# [ASSUMPTION] Not applying weight decay to biases and normalization layers
+# (standard practice, but paper does not specify)
+no_decay = ['bias', 'LayerNorm.weight', 'LayerNorm.bias']
+param_groups = [
+    {'params': [p for n, p in model.named_parameters()
+                if not any(nd in n for nd in no_decay)],
+     'weight_decay': config.weight_decay},
+    {'params': [p for n, p in model.named_parameters()
+                if any(nd in n for nd in no_decay)],
+     'weight_decay': 0.0}
+]
+optimizer = torch.optim.AdamW(param_groups, lr=config.lr)
+```
+</Note>
+
+### SGD with momentum
+
+Common in vision papers (ResNet, EfficientNet):
+
+| Parameter | Common value | Notes |
+|-----------|-------------|-------|
+| Momentum | 0.9 | Almost always |
+| Weight decay | 1e-4 | Vision standard, not universal |
+| Nesterov | Varies | Papers often don't specify |
+
+---
+
+## Learning rate schedules
+
+### Linear warmup then constant
+
+```python
+def get_warmup_schedule(optimizer, warmup_steps):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        return 1.0
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+```
+
+### Linear warmup then linear decay
+
+```python
+def get_linear_schedule(optimizer, warmup_steps, total_steps):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        return max(0.0, (total_steps - step) / (total_steps - warmup_steps))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+```
+
+### Linear warmup then cosine decay (very common)
+
+```python
+def get_cosine_schedule(optimizer, warmup_steps, total_steps, min_lr_ratio=0.0):
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        progress = (step - warmup_steps) / (total_steps - warmup_steps)
+        return min_lr_ratio + (1.0 - min_lr_ratio) * 0.5 * (1.0 + math.cos(math.pi * progress))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+```
+
+### Transformer schedule (Vaswani et al., 2017)
+
+The original transformer uses a unique schedule that many papers reference:
+
+```python
+def get_transformer_schedule(optimizer, d_model, warmup_steps):
+    """lr = d_model^(-0.5) * min(step^(-0.5), step * warmup_steps^(-1.5))"""
+    def lr_lambda(step):
+        step = max(step, 1)  # avoid division by zero
+        return d_model ** (-0.5) * min(step ** (-0.5), step * warmup_steps ** (-1.5))
+    return torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
+```
+
+This schedule doesn't need a base learning rate — it computes the LR from scratch. When papers say "following Vaswani et al. for learning rate," this is what they mean.
+
+---
+
+## Batch size semantics
+
+### The nomenclature problem
+
+When a paper says "batch size 256," it could mean:
+
+1. **Per-GPU batch size:** each GPU processes 256 samples.
+2. **Global batch size:** 256 total across all GPUs.
+3. **Effective batch size after gradient accumulation:** might be 32 per-GPU × 8 accumulation steps.
+
+This is critical for reproduction because learning rate scaling depends on batch size.
+
+### How to determine which
+
+| Clue | Interpretation |
+|------|---------------|
+| "per-GPU batch size" or "micro-batch size" | Clear — use as stated |
+| "total batch size" or "effective batch size" | Clear — use as stated |
+| "batch size" with N GPUs mentioned | Probably global: divide by N for per-GPU |
+| "gradient accumulation steps = K" with batch B | Effective batch = B × K |
+| Just "batch size" with no other info | PARTIALLY\_SPECIFIED — flag it |
+
+### Learning rate linear scaling rule
+
+Many papers implicitly use the linear scaling rule (Goyal et al., 2017):
+
+- If base LR is `lr` for batch size `B`, then LR for batch size `B'` is `lr * B' / B`.
+- For SGD: linear scaling. For Adam: sqrt scaling is often more appropriate — `lr * sqrt(B' / B)`.
+- If you change the batch size from what the paper specifies, flag the LR adjustment.
+
+---
+
+## Gradient clipping
+
+```python
+# Max gradient norm (most common) — apply AFTER loss.backward(), BEFORE optimizer.step():
+torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+# Max gradient value (less common — clips each element independently):
+torch.nn.utils.clip_grad_value_(model.parameters(), clip_value=0.5)
+```
+
+Common `max_norm` values:
+
+| Domain | Typical value |
+|--------|--------------|
+| Most NLP/transformer papers | 1.0 |
+| Some NLP papers | 0.5 |
+| Some RL papers | 5.0 |
+
+If the paper says "gradient clipping" without a value → UNSPECIFIED.
+
+---
+
+## Mixed precision training
+
+Train with FP16 (or BF16) for speed, keeping master weights in FP32 for stability.
+
+```python
+scaler = torch.amp.GradScaler()
+with torch.amp.autocast(device_type='cuda', dtype=torch.float16):
+    output = model(input)
+    loss = loss_fn(output, target)
+
+scaler.scale(loss).backward()
+scaler.step(optimizer)
+scaler.update()
+```
+
+What papers don't tell you:
+
+- BF16 doesn't need loss scaling (`GradScaler`) — it has the same dynamic range as FP32.
+- FP16 DOES need loss scaling to prevent gradient underflow.
+- "We use mixed precision" without specifying FP16 vs BF16 is **PARTIALLY\_SPECIFIED**.
+
+---
+
+## Exponential Moving Average (EMA)
+
+Common in diffusion models, GANs, and some vision models. Papers often mention EMA without specifying the decay rate.
+
+```python
+class EMA:
+    """Maintains exponential moving average of model parameters."""
+    def __init__(self, model: nn.Module, decay: float = 0.9999):
+        self.decay = decay
+        self.shadow = {name: param.clone().detach()
+                      for name, param in model.named_parameters()}
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        for name, param in model.named_parameters():
+            self.shadow[name].mul_(self.decay).add_(param.data, alpha=1 - self.decay)
+
+    def apply(self, model: nn.Module):
+        """Load EMA weights into model for evaluation."""
+        for name, param in model.named_parameters():
+            param.data.copy_(self.shadow[name])
+```
+
+Common decay values: 0.9999 (diffusion — DDPM, DDIM), 0.999 (some GAN papers), 0.99 (faster averaging). If the paper says "EMA" but not the decay rate → UNSPECIFIED.
+
+---
+
+## Common training recipes by domain
+
+<Warning>
+These are informed defaults, not specifications. If a paper says "we use standard training," it MIGHT mean the recipe below — but it's still UNSPECIFIED unless the paper states the specifics. Use this to choose reasonable defaults, not to skip flagging.
+</Warning>
+
+### Language models (GPT-style)
+
+| Setting | Common value |
+|---------|-------------|
+| Optimizer | AdamW, β₁=0.9, β₂=0.95, ε=1e-8 |
+| Weight decay | 0.1 (not on biases/norms) |
+| LR schedule | Cosine decay with linear warmup |
+| Gradient clipping | 1.0 (max norm) |
+| Batch size | Usually reported as total tokens/batch (e.g., "0.5M tokens") |
+
+### Vision transformers (ViT-style)
+
+| Setting | Common value |
+|---------|-------------|
+| Optimizer | AdamW, β₁=0.9, β₂=0.999 |
+| Weight decay | 0.05–0.3 |
+| LR schedule | Cosine decay with linear warmup (5–10 epochs) |
+| Data augmentation | RandAugment, Mixup, CutMix, random erasing (combination varies) |
+| Label smoothing | 0.1 |
+
+### Diffusion models (DDPM-style)
+
+| Setting | Common value |
+|---------|-------------|
+| Optimizer | Adam, β₁=0.9, β₂=0.999 (or 0.9999) |
+| LR | Constant (often 2e-4 or 1e-4) |
+| EMA | 0.9999 |
+| Gradient clipping | Sometimes, sometimes not |
+
+### Contrastive learning (SimCLR-style)
+
+| Setting | Common value |
+|---------|-------------|
+| Optimizer | SGD with momentum 0.9 (or LARS) |
+| LR schedule | Cosine decay after linear warmup (10 epochs) |
+| Weight decay | 1e-6 |
+| Batch size | Large (4096+) — crucial for contrastive performance |
+| Temperature | 0.1 or 0.5 |
+
+<CardGroup cols={2}>
+  <Card title="Loss functions" icon="function-square" href="/reference/knowledge/loss-functions">
+    Cross-entropy, contrastive loss, diffusion loss, and ELBO.
+  </Card>
+  <Card title="Common paper-to-code mistakes" icon="triangle-alert" href="/reference/knowledge/paper-to-code-mistakes">
+    Framework pitfalls and notation mismatches.
+  </Card>
+</CardGroup>

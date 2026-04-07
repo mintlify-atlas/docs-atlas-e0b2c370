@@ -1,0 +1,504 @@
+---
+title: "DDPM: Denoising Diffusion Probabilistic Models"
+description: "A full worked example: paper2code implements DDPM (Ho, Jain, Abbeel 2020) — forward process, training objective, reverse sampling, and U-Net backbone, all citation-anchored."
+keywords: ["DDPM", "diffusion models", "generative models", "worked example", "image generation"]
+---
+
+**Paper:** Denoising Diffusion Probabilistic Models — Ho, Jain, Abbeel, 2020
+**arXiv:** [2006.11239](https://arxiv.org/abs/2006.11239)
+**Command:**
+
+```bash
+/paper2code https://arxiv.org/abs/2006.11239
+```
+
+<Note>
+This page walks through the actual output of running paper2code on the DDPM paper. Every code block is taken verbatim from the generated files. The review section documents what the skill got right, what it correctly flagged as unspecified or sourced from the official code, and where the implementation diverges from the ideal.
+</Note>
+
+---
+
+## What this paper contributes
+
+DDPM introduces a training and sampling procedure for generative models based on reversing a gradual Gaussian noising process. The core contributions are:
+
+- The simplified training objective L_simple (§3.4, Eq. 14, Algorithm 1)
+- The reverse sampling algorithm (Algorithm 2)
+- The connection between the simplified objective, variational inference, and denoising score matching
+- The linear noise schedule β₁=10⁻⁴ to β_T=0.02 (§4)
+
+The U-Net architecture is **not** the paper's contribution — it is adapted from PixelCNN++ and score matching prior work. paper2code identifies this correctly and marks U-Net implementation details that come from the official code rather than the paper text.
+
+---
+
+<AccordionGroup>
+
+<Accordion title="File structure">
+
+```text
+ddpm/
+├── README.md                 # Project overview and quick start
+├── REPRODUCTION_NOTES.md     # Ambiguity audit — what's specified vs. assumed
+├── requirements.txt          # Dependencies
+├── src/
+│   ├── model.py              # U-Net noise prediction network (§3.3, Appendix B)
+│   ├── loss.py               # DDPM simplified loss L_simple (§3.4, Eq. 14)
+│   ├── data.py               # Dataset skeleton for image data
+│   ├── train.py              # Training loop — Algorithm 1
+│   ├── evaluate.py           # FID score computation
+│   └── utils.py              # Noise schedule, forward process, sampling (Algorithm 2)
+├── configs/
+│   └── base.yaml             # All hyperparameters from §4 and Appendix B
+└── notebooks/
+    └── walkthrough.ipynb     # Paper sections → code → sanity checks
+```
+
+**Dependencies** (`requirements.txt`):
+
+```text
+torch>=2.0.0
+numpy>=1.24.0
+pyyaml>=6.0
+```
+
+</Accordion>
+
+<Accordion title="Core diffusion code">
+
+### Noise schedule (§4)
+
+```python
+def linear_noise_schedule(
+    timesteps: int = 1000,
+    beta_start: float = 1e-4,
+    beta_end: float = 0.02,
+) -> Dict[str, torch.Tensor]:
+    """§4 — Linear variance schedule.
+
+    "We set the forward process variances to constants increasing linearly
+     from β_1 = 10^-4 to β_T = 0.02."
+
+    Precomputes all quantities needed for training and sampling.
+    """
+    # §4 — linear schedule
+    betas = torch.linspace(beta_start, beta_end, timesteps)
+
+    # §2 — α_t = 1 - β_t
+    alphas = 1.0 - betas
+
+    # §2 — α̅_t = Π_{s=1}^{t} α_s  (cumulative product)
+    alphas_cumprod = torch.cumprod(alphas, dim=0)
+
+    # α̅_{t-1} — needed for posterior q(x_{t-1} | x_t, x_0)
+    alphas_cumprod_prev = torch.cat([torch.tensor([1.0]), alphas_cumprod[:-1]])
+
+    # Precompute for q(x_t | x_0) = N(x_t; √α̅_t x_0, (1-α̅_t)I)
+    sqrt_alphas_cumprod = torch.sqrt(alphas_cumprod)
+    sqrt_one_minus_alphas_cumprod = torch.sqrt(1.0 - alphas_cumprod)
+
+    # §3.2, Eq. 7 — Posterior variance β̃_t = β_t * (1 - α̅_{t-1}) / (1 - α̅_t)
+    posterior_variance = betas * (1.0 - alphas_cumprod_prev) / (1.0 - alphas_cumprod)
+
+    return {
+        "betas": betas,
+        "alphas_cumprod": alphas_cumprod,
+        "sqrt_alphas_cumprod": sqrt_alphas_cumprod,
+        "sqrt_one_minus_alphas_cumprod": sqrt_one_minus_alphas_cumprod,
+        "sqrt_recip_alphas": 1.0 / torch.sqrt(alphas),
+        "posterior_variance": posterior_variance,
+        # ... (additional precomputed quantities)
+    }
+```
+
+### Forward process — q(x_t | x_0) in closed form (§3, Eq. 4)
+
+```python
+def q_sample(
+    x_0: torch.Tensor,
+    t: torch.Tensor,
+    schedule: Dict[str, torch.Tensor],
+    noise: Optional[torch.Tensor] = None,
+) -> torch.Tensor:
+    """§3, Eq. 4 — Forward process: sample x_t from q(x_t | x_0).
+
+    "A notable property is that we can sample x_t at any arbitrary time step t
+     in closed form: q(x_t | x_0) = N(x_t; √α̅_t x_0, (1 - α̅_t)I)"
+
+    x_t = √α̅_t * x_0 + √(1 - α̅_t) * ε, where ε ~ N(0, I)
+    """
+    if noise is None:
+        noise = torch.randn_like(x_0)
+
+    sqrt_alpha_cumprod = schedule["sqrt_alphas_cumprod"][t].view(-1, 1, 1, 1)
+    sqrt_one_minus_alpha_cumprod = schedule["sqrt_one_minus_alphas_cumprod"][t].view(-1, 1, 1, 1)
+
+    # §3, Eq. 4
+    return sqrt_alpha_cumprod * x_0 + sqrt_one_minus_alpha_cumprod * noise
+```
+
+### Simplified training objective — L_simple (§3.4, Eq. 14)
+
+```python
+class DDPMLoss(nn.Module):
+    """§3.4, Eq. 14 — Simplified training objective L_simple.
+
+    Computes MSE between true noise and predicted noise:
+        L = ||ε − ε_θ(x_t, t)||²
+
+    "We found it beneficial to sample quality (and simpler to implement)
+    to train on the following variant of the variational bound... L_simple"
+    """
+
+    def forward(
+        self,
+        noise_pred: torch.Tensor,
+        noise_true: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        §3.4, Eq. 14 — L_simple = E[||ε − ε_θ(x_t, t)||²]
+
+        Args:
+            noise_pred: (batch, C, H, W) — predicted noise ε_θ(x_t, t)
+            noise_true: (batch, C, H, W) — true noise ε ~ N(0, I)
+        """
+        # §3.4 — simple MSE, "equivalent to (a re-weighted variant of) the ELBO"
+        return nn.functional.mse_loss(noise_pred, noise_true)
+```
+
+### Reverse sampling — Algorithm 2
+
+```python
+@torch.no_grad()
+def p_sample(
+    model: nn.Module,
+    x_t: torch.Tensor,
+    t: torch.Tensor,
+    t_index: int,
+    schedule: Dict[str, torch.Tensor],
+) -> torch.Tensor:
+    """Algorithm 2, lines 3-4 — Single reverse step: x_{t-1} from p_θ(x_{t-1} | x_t).
+
+    "x_{t-1} = 1/√α_t * (x_t - β_t/√(1-α̅_t) * ε_θ(x_t, t)) + σ_t * z"
+    where z ~ N(0, I) if t > 1, else z = 0.
+    """
+    predicted_noise = model(x_t, t)
+
+    beta_t = schedule["betas"][t_index]
+    sqrt_recip_alpha_t = schedule["sqrt_recip_alphas"][t_index]
+    sqrt_one_minus_alpha_cumprod_t = schedule["sqrt_one_minus_alphas_cumprod"][t_index]
+
+    # Algorithm 2, line 4 — μ_θ = 1/√α_t * (x_t - β_t/√(1-α̅_t) * ε_θ(x_t, t))
+    mean = sqrt_recip_alpha_t * (
+        x_t - beta_t / sqrt_one_minus_alpha_cumprod_t * predicted_noise
+    )
+
+    if t_index == 0:
+        # Algorithm 2, line 3 — z = 0 at final step
+        return mean
+    else:
+        # §3.4 — σ²_t = β_t (fixed small variance)
+        sigma_t = torch.sqrt(schedule["betas"][t_index])
+        noise = torch.randn_like(x_t)
+        return mean + sigma_t * noise
+
+
+@torch.no_grad()
+def sample(
+    model: nn.Module,
+    schedule: Dict[str, torch.Tensor],
+    image_shape: tuple,
+    device: torch.device,
+) -> torch.Tensor:
+    """Algorithm 2 — Full reverse sampling process.
+
+    1: x_T ~ N(0, I)
+    2: for t = T, ..., 1 do
+    3:   z ~ N(0, I) if t > 1, else z = 0
+    4:   x_{t-1} = 1/√α_t (x_t - β_t/√(1-α̅_t) ε_θ(x_t, t)) + σ_t z
+    5: end for
+    6: return x_0
+    """
+    model.eval()
+    timesteps = len(schedule["betas"])
+    x = torch.randn(image_shape, device=device)  # Algorithm 2, line 1: x_T ~ N(0, I)
+
+    for t_index in reversed(range(timesteps)):
+        t = torch.full((image_shape[0],), t_index, device=device, dtype=torch.long)
+        x = p_sample(model, x, t, t_index, schedule)
+
+    return x
+```
+
+### EMA (§4)
+
+```python
+class EMA:
+    """§4 — Exponential Moving Average of model parameters.
+
+    "We report sample quality metrics using an exponential moving average (EMA)
+     of model parameters with a decay factor of 0.9999."
+
+    The EMA weights are used for sampling/evaluation, not for training.
+    """
+
+    def __init__(self, model: nn.Module, decay: float = 0.9999):
+        self.decay = decay
+        self.shadow = {}
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow[name] = param.data.clone()
+
+    @torch.no_grad()
+    def update(self, model: nn.Module):
+        """Update EMA weights after each training step."""
+        for name, param in model.named_parameters():
+            if param.requires_grad and name in self.shadow:
+                self.shadow[name].mul_(self.decay).add_(
+                    param.data, alpha=1.0 - self.decay
+                )
+```
+
+### Training loop — Algorithm 1
+
+```python
+# Algorithm 1, line 2: x_0 ~ q(x_0)
+x_0 = batch[0].to(device)  # labels discarded (unconditional generation)
+batch_size = x_0.shape[0]
+
+# Algorithm 1, line 3: t ~ Uniform({1, ..., T})
+t = torch.randint(1, T + 1, (batch_size,), device=device)
+
+# Algorithm 1, line 4: ε ~ N(0, I)
+noise = torch.randn_like(x_0)
+
+# Algorithm 1, line 5: compute x_t and predict noise
+x_t = q_sample(x_0, t, sqrt_alpha_bar, sqrt_one_minus_alpha_bar, noise)
+noise_pred = model(x_t, t)
+
+# L_simple — §3.4, Eq. 14
+loss = criterion(noise_pred, noise)
+
+optimizer.zero_grad()
+loss.backward()
+
+# [FROM_OFFICIAL_CODE] gradient clipping — not mentioned in paper
+if grad_clip > 0:
+    nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
+
+optimizer.step()
+ema.update()  # §4 — EMA update after every step
+```
+
+</Accordion>
+
+<Accordion title="U-Net model code">
+
+<Tip>
+The U-Net is not the paper's core contribution. paper2code correctly marks many of its implementation details as `[FROM_OFFICIAL_CODE]` because the paper only briefly describes the architecture in §3.3 and Appendix B. The actual specification comes from the official JAX code at github.com/hojonathanho/diffusion.
+</Tip>
+
+### Configuration
+
+```python
+@dataclass
+class UNetConfig:
+    """U-Net configuration.
+
+    Values from Appendix B (CIFAR-10 config) and official code unless marked.
+    """
+    image_channels: int = 3           # §4 — RGB images
+    base_channels: int = 128          # Appendix B — "128 base channels"
+    channel_mults: tuple = (1, 2, 2, 2)  # [FROM_OFFICIAL_CODE] — channel multipliers per level
+    num_res_blocks: int = 2           # [FROM_OFFICIAL_CODE] — residual blocks per resolution level
+    attention_resolutions: tuple = (16,)  # Appendix B — "attention at 16×16 resolution"
+    dropout: float = 0.0             # Appendix B — "dropout 0.0" for CIFAR-10
+    time_embed_dim: int = 512        # [FROM_OFFICIAL_CODE] — 4 * base_channels
+    num_groups: int = 32             # [FROM_OFFICIAL_CODE] — groups for GroupNorm
+    image_size: int = 32             # CIFAR-10 is 32×32
+```
+
+### Sinusoidal timestep embedding (§3.3)
+
+```python
+class SinusoidalTimeEmbedding(nn.Module):
+    """§3.3 — "The diffusion time t is specified by adding the Transformer
+    sinusoidal position embedding into each residual block."
+
+    [FROM_OFFICIAL_CODE] The embedding dimension and MLP projection follow
+    the official implementation.
+    """
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            t: (batch,) — integer timesteps
+        Returns:
+            (batch, embed_dim) — sinusoidal embedding
+        """
+        half_dim = self.embed_dim // 2
+        emb = math.log(10000.0) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, device=t.device, dtype=torch.float32) * -emb)
+        emb = t.float().unsqueeze(1) * emb.unsqueeze(0)
+        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=-1)  # (batch, embed_dim)
+        return emb
+```
+
+### Residual block with time conditioning (§3.3, Appendix B)
+
+```python
+class ResidualBlock(nn.Module):
+    """§3.3 — "group normalization throughout... Transformer sinusoidal position
+    embedding into each residual block"
+
+    [FROM_OFFICIAL_CODE] Structure: GroupNorm -> SiLU -> Conv -> GroupNorm -> SiLU -> Dropout -> Conv + residual
+    """
+
+    def forward(self, x: torch.Tensor, t_emb: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: (batch, in_channels, H, W)
+            t_emb: (batch, time_embed_dim)
+        Returns:
+            (batch, out_channels, H, W)
+        """
+        h = self.norm1(x)
+        h = F.silu(h)
+        h = self.conv1(h)
+
+        # Add time embedding — broadcast over spatial dimensions
+        t = self.time_proj(F.silu(t_emb))
+        h = h + t.unsqueeze(-1).unsqueeze(-1)  # (batch, out_channels, H, W)
+
+        h = self.norm2(h)
+        h = F.silu(h)
+        h = self.dropout(h)
+        h = self.conv2(h)
+
+        return h + self.skip(x)  # residual connection
+```
+
+</Accordion>
+
+<Accordion title="Reproduction notes">
+
+The generated `REPRODUCTION_NOTES.md` records every implementation decision with its source. A key discipline in this example is distinguishing three categories of detail:
+
+- **Specified in paper** — cited with section and equation number
+- **`[UNSPECIFIED]`** — paper doesn't mention it; a reasonable default is chosen
+- **`[FROM_OFFICIAL_CODE]`** — sourced from github.com/hojonathanho/diffusion, not from the paper text
+
+**Unspecified choices:**
+
+| Component | Choice made | Source | Paper quote |
+|---|---|---|---|
+| U-Net channel multipliers | [1, 2, 2, 2] | `[FROM_OFFICIAL_CODE]` | Appendix B says "128 channels" only |
+| Attention resolution | 16 | Appendix B | "attention at 16×16 resolution" |
+| Dropout rate | 0.0 (CIFAR-10) | Appendix B | "dropout 0.0 for CIFAR10" |
+| Weight initialization | PyTorch defaults | `[UNSPECIFIED]` | — |
+| Gradient clipping | 1.0 | `[FROM_OFFICIAL_CODE]` | Not mentioned in paper |
+| Batch size | 128 | `[FROM_OFFICIAL_CODE]` | Not stated in paper |
+| Num residual blocks per level | 2 | `[FROM_OFFICIAL_CODE]` | — |
+| Group norm num_groups | 32 | `[FROM_OFFICIAL_CODE]` | — |
+| Data normalization | [-1, 1] | `[FROM_OFFICIAL_CODE]` | Not specified in paper |
+
+**Known deviations:**
+
+| Deviation | Paper says | Implementation | Reason |
+|---|---|---|---|
+| Variance | Discusses both β_t and β̃_t | Uses σ²_t = β_t (fixed) | §3.4: "setting Σ_θ = σ²_t I... achieved similar results" |
+
+**Expected results:**
+
+| Metric | Paper (Table 1) | Dataset |
+|---|---|---|
+| FID | 3.17 | CIFAR-10 unconditional |
+| IS | 9.46 | CIFAR-10 unconditional |
+| FID | 5.24 | LSUN Bedroom 256×256 |
+
+**Debugging tips from the generated notes:**
+
+- **Samples look like noise after training** — verify the noise schedule. α̅_T should be close to 0. If not, the forward process doesn't destroy enough information and sampling from N(0,1) doesn't work.
+- **Samples are blurry** — DDPM needs 800k+ training steps on CIFAR-10. Also verify you are using EMA weights for sampling, not training weights.
+- **Mode collapse or repetitive samples** — check that the timestep embedding is working. If t is not properly conditioned, the model can't distinguish noise levels.
+- **Loss doesn't decrease** — verify the forward process: x_t = √(α̅_t) * x_0 + √(1 - α̅_t) * ε. Check signs and square roots.
+- **NaN in sampling** — at t=0, some terms can be 0/0. The original code clips or special-cases t=0.
+
+</Accordion>
+
+<Accordion title="Review">
+
+### Coverage assessment
+
+| Contribution | Implemented | Location |
+|---|---|---|
+| Forward diffusion q(x_t\|x_{t-1}) | ✓ | `utils.py: q_sample()` — §2, Eq. 2 |
+| Reverse process p_θ(x_{t-1}\|x_t) | ✓ | `utils.py: p_sample()` — §3.2, Eq. 11 |
+| L_simple training objective | ✓ | `loss.py: DDPMLoss` — §3.4, Eq. 14 |
+| Linear noise schedule | ✓ | `utils.py: linear_noise_schedule()` — §4 |
+| Algorithm 1 (Training) | ✓ | `train.py` — §3.4 |
+| Algorithm 2 (Sampling) | ✓ | `utils.py: sample()` — §3.4 |
+| U-Net architecture | ✓ | `model.py: UNet` — §3.3, Appendix B |
+| Fixed variance σ²_t = β_t | ✓ | §3.4 recommendation |
+| EMA of model parameters (0.9999) | ✓ | `utils.py: EMA` — §4 |
+
+**Intentionally excluded:**
+
+| Paper content | Reason |
+|---|---|
+| L_vlb (full variational bound, Eq. 5) | Paper recommends L_simple; L_vlb used only for comparison in Table 2 |
+| Learned variance Σ_θ | Paper explores this but recommends fixed variance (§3.4) |
+| CelebA-HQ / LSUN experiments | Larger-scale; architecture targets CIFAR-10 config |
+| Progressive coding / lossless compression | Interesting analysis but not the generative model itself |
+
+### What the skill got correctly
+
+- **Noise schedule** — linear β₁=10⁻⁴ to β_T=0.02 for T=1000 (§4)
+- **Training objective** — pure MSE between ε and ε_θ, matching Eq. 14
+- **Forward process** — closed-form q(x_t|x_0) via reparameterization (Eq. 4)
+- **Reverse process** — fixed variance, learned mean via Eq. 11
+- **EMA decay 0.9999** correctly sourced from §4
+- **Core contribution framing** — correctly identifies the algorithms (not the U-Net) as the paper's contribution, and marks U-Net details accordingly
+
+### Assumptions and gaps
+
+- **Batch size 128** — `[FROM_OFFICIAL_CODE]`, paper doesn't state it
+- **Gradient clipping 1.0** — `[FROM_OFFICIAL_CODE]`, not mentioned in paper
+- **No LR schedule** — `[UNSPECIFIED]`, paper doesn't describe one
+- **Channel multipliers [1,2,2,2]** — `[FROM_OFFICIAL_CODE]`, Appendix B only says "128 channels"
+- **Data normalization [-1,1]** — `[FROM_OFFICIAL_CODE]`
+
+### Known differences from ideal
+
+- **Model size** — the U-Net is approximately correct for CIFAR-10 but may not match the exact ~35.7M parameter count reported in Appendix B
+- **Attention implementation** — uses simple single-head self-attention; the official code has minor normalization differences
+- **Training compute** — paper trained on TPU v3-8 for 800K steps (~50 GPU-hours on V100); this is single-GPU code
+
+### Reproducibility expectations
+
+| Metric | Paper (Table 1) | Expected from this code |
+|---|---|---|
+| FID | 3.17 | ~5–10 (potential minor architecture differences) |
+| IS | 9.46 | ~8–9 |
+
+Achieving exact paper numbers requires matching the architecture precisely (some details only in the official code), running full 800K steps, using EMA parameters for evaluation, and using 50K generated samples for FID.
+
+### Overall assessment
+
+**Code quality: High.** Citation anchoring is thorough. The `[FROM_OFFICIAL_CODE]` flag discipline is the right approach for a paper where the architecture is significantly under-specified in the text itself — honest about where the information comes from.
+
+**Scope: Correct.** Training and sampling are the contributions; the U-Net is correctly treated as a necessary component rather than a contribution to be derived from paper text alone.
+
+</Accordion>
+
+</AccordionGroup>
+
+---
+
+<CardGroup cols={2}>
+  <Card title="Attention Is All You Need" icon="layer-group" href="/examples/attention-is-all-you-need">
+    See how paper2code handles an architecture paper with fully paper-specified details.
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Run paper2code on your own paper in three steps.
+  </Card>
+</CardGroup>

@@ -1,0 +1,92 @@
+---
+title: "Introduction"
+description: "paper2code is a Claude Code skill that converts arXiv papers into citation-anchored Python implementations — no silent assumptions, no invented details."
+---
+
+## What is paper2code?
+
+paper2code is a Claude Code skill that takes an arXiv paper URL and produces a structured Python implementation where every line of code traces back to a specific section or equation in the paper.
+
+You run one command:
+
+```bash
+/paper2code https://arxiv.org/abs/1706.03762
+```
+
+And you get a complete project directory with cited source files, a hyperparameter config, a reproduction notes document, and a pedagogical notebook — ready to run, ready to audit.
+
+## The problem it solves
+
+ML papers are vague. Critical hyperparameters are buried in appendices or omitted entirely. Prose contradicts equations. "Standard settings" refers to nothing specific. When you implement a paper yourself, you spend more time detective-working than coding.
+
+Naive LLM code generation makes this worse, not better. It fills in every gap silently and confidently. You get something that runs but doesn't match the paper. Worse, you can't tell which parts came from the paper and which the model invented.
+
+<Warning>
+  If you can't distinguish paper-specified choices from model-invented ones, you cannot reproduce results — and you cannot debug failures.
+</Warning>
+
+## How paper2code is different
+
+paper2code enforces four properties that naive generation ignores:
+
+<AccordionGroup>
+  <Accordion title="Citation anchoring" icon="link" defaultOpen={true}>
+    Every non-trivial code decision is anchored to the exact paper section and equation it implements. Variable names match paper notation. If a line implements §3.2, Eq. 4, the comment says so.
+
+    ```python
+    # §3.2, Eq. 2 — attention_weights = softmax(QK^T / sqrt(d_k))
+    attn_out = self.attention(self.norm1(x))  # (batch, seq_len, d_model)
+    x = x + attn_out  # §3.2 — residual connection
+    ```
+  </Accordion>
+
+  <Accordion title="Ambiguity auditing" icon="magnifying-glass">
+    Before writing a single line of code, paper2code classifies every implementation-relevant detail as `SPECIFIED`, `PARTIALLY_SPECIFIED`, or `UNSPECIFIED`. The audit is saved to `REPRODUCTION_NOTES.md` so you can see exactly what the paper left open.
+  </Accordion>
+
+  <Accordion title="Honest uncertainty" icon="circle-question">
+    Unspecified choices are flagged at the exact line where the choice is made — with the flag tag, a common default, and alternatives listed.
+
+    ```python
+    # [UNSPECIFIED] Paper does not state epsilon for LayerNorm — using 1e-6 (common default)
+    # Alternatives: 1e-5 (PyTorch default), 1e-8 (some implementations)
+    self.norm = nn.LayerNorm(d_model, eps=1e-6)
+    ```
+
+    paper2code will never silently fill in a gap.
+  </Accordion>
+
+  <Accordion title="Appendix mining" icon="book-open">
+    Appendices, footnotes, and figure captions are treated as first-class sources. Many papers bury critical hyperparameters in appendix tables. paper2code reads all of it before generating any code.
+  </Accordion>
+</AccordionGroup>
+
+## What paper2code will NOT do
+
+<Note>
+  These are intentional design constraints, not limitations to be worked around.
+</Note>
+
+- **Won't guarantee correctness.** The implementation matches what the paper describes. If the paper is wrong, the code is wrong. If the paper is vague, the code flags it.
+- **Won't invent details.** If the paper doesn't specify a hyperparameter, the code uses a common default and marks it `[UNSPECIFIED]`. It will never silently fill in gaps.
+- **Won't download datasets.** The `data.py` file provides a `Dataset` class skeleton with clear instructions on where to get the data and how to preprocess it.
+- **Won't set up training infrastructure.** No distributed training, no experiment tracking, no checkpointing beyond what the paper's contribution requires.
+- **Won't implement baselines.** Only the core contribution of the paper is implemented.
+- **Won't reimplement standard components.** If the paper says "standard transformer encoder," the code imports it or notes the dependency — it doesn't reimplement attention from scratch.
+
+## Get started
+
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Install paper2code and run your first implementation in minutes.
+  </Card>
+  <Card title="What you get" icon="folder-open" href="/what-you-get">
+    Understand every file in the output directory before you run anything.
+  </Card>
+  <Card title="Citation anchoring" icon="link" href="/guides/citation-anchoring">
+    Learn the full citation and flag system used throughout generated code.
+  </Card>
+  <Card title="Usage modes" icon="sliders" href="/guides/usage-modes">
+    Choose between minimal, full, and educational modes for your use case.
+  </Card>
+</CardGroup>
